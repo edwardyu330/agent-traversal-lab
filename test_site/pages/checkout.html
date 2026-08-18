@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Checkout — The Turing Arcade{% endblock %}
+{% block content %}
+  <h1>Checkout</h1>
+
+  <ul class="cart-items" id="cart-items"></ul>
+  <p class="muted" id="empty-cart-message" style="display:none;">Your cart is empty — add something from the Shop first.</p>
+
+  <form class="narrow" id="checkout-form">
+    <label for="name">Full name</label>
+    <input type="text" id="name" name="name" />
+
+    <label for="address">Shipping address</label>
+    <input type="text" id="address" name="address" />
+
+    <label for="card">Card number</label>
+    <input type="text" id="card" name="card" placeholder="4242 4242 4242 4242" />
+
+    <p style="margin-top: 18px;">
+      <input type="submit" value="Submit order" id="submit-order" />
+    </p>
+  </form>
+
+  <div class="confirmation" id="confirmation" style="display:none;">
+    <strong>Order confirmed.</strong> Thanks for your purchase — this was a test-site checkout, nothing was charged.
+
+    <div id="verdict-loading" style="margin-top:16px;">Analyzing your session...</div>
+
+    <div id="verdict-result" style="display:none; margin-top:16px;">
+      <p id="verdict-text" style="font-size:16px; font-weight:600;"></p>
+      <form id="reveal-form" style="margin-top:12px;">
+        <p style="margin:0 0 8px;">What were you really?</p>
+        <label style="display:inline-block; margin-right:16px;">
+          <input type="radio" name="claimed_type" value="human" checked /> Human
+        </label>
+        <label style="display:inline-block; margin-right:16px;">
+          <input type="radio" name="claimed_type" value="bot_script" /> Bot / script
+        </label>
+        <label style="display:inline-block;">
+          <input type="radio" name="claimed_type" value="agent" /> AI agent
+        </label>
+        <label for="tool">Tool (optional)</label>
+        <input type="text" id="tool" name="tool" placeholder="e.g. Selenium, Browser Use, custom Playwright" />
+        <p style="margin-top:14px;"><input type="submit" value="Reveal" /></p>
+      </form>
+    </div>
+
+    <div id="reveal-thanks" style="display:none; margin-top:16px;">
+      Thanks — your answer has been recorded.
+    </div>
+  </div>
+
+  <script>
+    function renderCart() {
+      const cart = ATLCart.getCart();
+      const list = document.getElementById("cart-items");
+      const emptyMsg = document.getElementById("empty-cart-message");
+      list.innerHTML = "";
+      if (cart.length === 0) {
+        emptyMsg.style.display = "block";
+        return;
+      }
+      emptyMsg.style.display = "none";
+      cart.forEach((item) => {
+        const li = document.createElement("li");
+        li.textContent = `${item.name} x${item.qty}`;
+        const span = document.createElement("span");
+        span.textContent = `$${item.price * item.qty}`;
+        li.appendChild(span);
+        list.appendChild(li);
+      });
+    }
+
+    renderCart();
+
+    async function showVerdict() {
+      try {
+        const res = await fetch(`/api/verdict/${window.ATL.sessionId}`);
+        const data = await res.json();
+        document.getElementById("verdict-loading").style.display = "none";
+        document.getElementById("verdict-text").textContent =
+          `We think you were: ${data.verdict}, ${data.confidence}% confident.`;
+        document.getElementById("verdict-result").style.display = "block";
+      } catch (err) {
+        document.getElementById("verdict-loading").textContent = "Couldn't compute a verdict.";
+      }
+    }
+
+    document.getElementById("checkout-form").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      const cart = ATLCart.getCart();
+      if (window.ATL) {
+        window.ATL.track("task_complete", { item_count: cart.reduce((s, i) => s + i.qty, 0) });
+        await window.ATL.flushNow();
+      }
+      ATLCart.clearCart();
+      document.getElementById("checkout-form").style.display = "none";
+      document.getElementById("confirmation").style.display = "block";
+      renderCart();
+      showVerdict();
+    });
+
+    document.getElementById("reveal-form").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      const claimedType = this.querySelector('input[name="claimed_type"]:checked').value;
+      const tool = document.getElementById("tool").value.trim();
+      await fetch("/api/reveal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: window.ATL.sessionId,
+          claimed_type: claimedType,
+          tool: tool || null,
+        }),
+      });
+      document.getElementById("verdict-result").style.display = "none";
+      document.getElementById("reveal-thanks").style.display = "block";
+    });
+  </script>
+{% endblock %}

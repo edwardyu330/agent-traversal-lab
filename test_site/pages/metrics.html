@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Metrics — agent-traversal-lab</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, Helvetica, Arial, sans-serif;
+      margin: 0; background: #0d0f0d; color: #f0f0ec;
+    }
+    header { padding: 18px 28px; border-bottom: 1px solid #232823; }
+    header h1 { margin: 0; font-size: 20px; }
+    header p { margin: 4px 0 0; color: #888; font-size: 13px; }
+    main { max-width: 1100px; margin: 0 auto; padding: 24px 28px 60px; }
+    section { margin-bottom: 36px; }
+    h2 { font-size: 15px; color: #6fcf97; text-transform: uppercase; letter-spacing: 0.5px; margin: 0 0 12px; }
+    .section-note { color: #777; font-size: 12px; margin: -6px 0 12px; }
+
+    .card-row { display: flex; gap: 14px; flex-wrap: wrap; }
+    .card { background: #161916; border: 1px solid #232823; border-radius: 8px; padding: 14px 18px; min-width: 130px; }
+    .card .value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .card .label { font-size: 12px; color: #888; margin-top: 2px; }
+    .card.highlight { border-color: #3a5a40; }
+    .card.highlight .value { color: #6fcf97; }
+
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #1e211e; white-space: nowrap; }
+    th { color: #888; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; }
+    td { font-variant-numeric: tabular-nums; }
+    .table-scroll { overflow-x: auto; border: 1px solid #232823; border-radius: 8px; }
+    .table-scroll table { min-width: 600px; }
+
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #999; }
+    .muted { color: #666; }
+    .band-block { color: #e07a5f; }
+    .band-step_up { color: #f2cc8f; }
+    .band-allow { color: #6fcf97; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>agent-traversal-lab — Metrics</h1>
+    <p>Live read from data/traversal.db. Not linked from any public page.</p>
+  </header>
+  <main>
+    {% if empty %}
+      <p class="muted">No sessions captured yet.</p>
+    {% else %}
+
+    <section>
+      <h2>Overview</h2>
+      <div class="card-row">
+        <div class="card highlight">
+          <div class="value">{{ total }}</div>
+          <div class="label">Total sessions</div>
+        </div>
+        <div class="card highlight">
+          <div class="value">{{ overview.avg_overall_detection_score }}</div>
+          <div class="label">Avg. detection score (0-100)</div>
+        </div>
+        <div class="card highlight">
+          <div class="value">{{ overview.avg_player_score if overview.avg_player_score is not none else "—" }}</div>
+          <div class="label">Avg. player score</div>
+        </div>
+        <div class="card">
+          <div class="value">{{ overview.revealed_count }}</div>
+          <div class="label">Revealed</div>
+        </div>
+        <div class="card">
+          <div class="value">{{ overview.verified_count }}</div>
+          <div class="label">Trust = verified</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Sessions by label</h2>
+      <div class="card-row">
+        {% for label in labels %}
+        <div class="card">
+          <div class="value">{{ label_counts[label] }}</div>
+          <div class="label">{{ label }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section>
+      <h2>Averages by label</h2>
+      <p class="section-note">
+        overall_detection_score = max(score, raw_automation_score) — what /api/verdict actually uses.
+        score and raw_automation_score are the two feeder tracks, shown separately so it's visible
+        which one is carrying a given label; they're never summed. player_score is the honor-system,
+        leaderboard-facing number — only set for revealed /arcade sessions.
+      </p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Label</th><th>Overall detection score</th><th>Arcade/curvature score</th><th>Raw-automation score</th><th>Player score</th></tr></thead>
+          <tbody>
+            {% for label in labels %}
+            <tr>
+              <td>{{ label }}</td>
+              <td><strong>{{ score_stats[label]["overall_detection_score"] }}</strong></td>
+              <td>{{ score_stats[label]["score"] }}</td>
+              <td>{{ score_stats[label]["raw_automation_score"] }}</td>
+              <td>{{ player_score_avg[label] if label in player_score_avg else "—" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Signal averages, by label</h2>
+      <p class="section-note">Blank = no session with that label has produced this signal yet.</p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Signal</th>{% for label in labels %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for col in numeric_cols %}
+            <tr>
+              <td>{{ signal_labels.get(col, col) }}</td>
+              {% for label in labels %}
+              <td>{{ numeric_means[label][col] if numeric_means[label][col] is not none else "—" }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Boolean artifact rates, by label</h2>
+      <p class="section-note">Fraction of sessions where this was true (1.0 = always).</p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Signal</th>{% for label in labels %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for col in bool_cols %}
+            <tr>
+              <td>{{ signal_labels.get(col, col) }}</td>
+              {% for label in labels %}
+              <td>{{ bool_rates[label][col] if bool_rates[label][col] is not none else "—" }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Categorical distributions</h2>
+      {% for col in categorical_cols %}
+      <p style="margin-bottom:6px; font-size:13px;">{{ signal_labels.get(col, col) }}</p>
+      <div class="table-scroll" style="margin-bottom:16px;">
+        <table>
+          <thead><tr><th>Label</th><th>vision</th><th>dom</th><th>visible</th><th>ambiguous</th><th>visual</th><th>other</th><th>none</th></tr></thead>
+          <tbody>
+            {% for label in labels %}
+            <tr>
+              <td>{{ label }}</td>
+              {% for v in ["vision", "dom", "visible", "ambiguous", "visual", "other", "none"] %}
+              <td>{{ categorical_dist[col][label].get(v, "") if categorical_dist[col].get(label) else "" }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endfor %}
+    </section>
+
+    <section>
+      <h2>Sessions</h2>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>session_id</th><th>label</th><th>trust</th><th>score</th><th>band</th>
+              <th>player_score</th><th>name</th><th>tool</th><th>started_at</th><th>revealed_at</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in sessions %}
+            <tr>
+              <td class="mono">{{ s.session_id[:8] }}</td>
+              <td>{{ s.label }}</td>
+              <td>{{ s.trust or "—" }}</td>
+              <td>{{ s.overall_detection_score if s.overall_detection_score is defined else "—" }}</td>
+              <td class="band-{{ s.band }}">{{ s.band or "—" }}</td>
+              <td>{{ s.player_score if s.player_score is not none else "—" }}</td>
+              <td>{{ s.player_name or "—" }}</td>
+              <td>{{ s.tool or "—" }}</td>
+              <td class="mono">{{ s.started_at[:19] }}</td>
+              <td class="mono">{{ s.revealed_at[:19] if s.revealed_at else "—" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    {% endif %}
+  </main>
+</body>
+</html>

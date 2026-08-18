@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Leaderboard — The Turing Arcade</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, Helvetica, Arial, sans-serif;
+      margin: 0; background: #0d0f0d; color: #f0f0ec; min-height: 100vh;
+      display: flex; flex-direction: column;
+    }
+    header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 14px 24px; border-bottom: 1px solid #232823;
+    }
+    header .brand { font-weight: 700; font-size: 16px; margin: 0; }
+    header a {
+      color: #fff; text-decoration: none; background: #3a5a40; border-radius: 6px;
+      padding: 8px 16px; font-size: 14px; font-weight: 600;
+    }
+    header a:hover { background: #2f4a34; }
+    main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 40px 24px; }
+    h1 { font-size: 24px; margin: 0 0 24px; }
+
+    .leaderboard-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+    .leaderboard-tabs button {
+      background: #1a1d1a; color: #ccc; font-weight: 600; padding: 9px 20px; font-size: 14px;
+      border: none; border-radius: 6px; cursor: pointer;
+    }
+    .leaderboard-tabs button.active { background: #3a5a40; color: #fff; }
+
+    #leaderboard-list {
+      list-style: none; padding: 0; margin: 0; width: 100%; max-width: 420px;
+      border: 1px solid #232823; border-radius: 8px; overflow: hidden;
+    }
+    #leaderboard-list li {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 12px 18px; border-bottom: 1px solid #1a1d1a; font-size: 15px;
+    }
+    #leaderboard-list li:last-child { border-bottom: none; }
+    #leaderboard-list li:nth-child(1) { color: #6fcf97; font-weight: 700; font-size: 17px; }
+    .lb-rank { color: #666; font-variant-numeric: tabular-nums; width: 28px; display: inline-block; }
+    .lb-score { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+    .muted { color: #666; }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="brand">The Turing Arcade — Leaderboard</p>
+    <a href="/arcade">Play →</a>
+  </header>
+  <main>
+    <h1>Top scores</h1>
+    <div class="leaderboard-tabs">
+      <button type="button" data-label="human">Human</button>
+      <button type="button" data-label="bot_script">Bot</button>
+      <button type="button" data-label="agent">Agent</button>
+    </div>
+    <ol id="leaderboard-list"></ol>
+  </main>
+
+  <script>
+    function escapeHtml(s) {
+      const div = document.createElement("div");
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    function loadLeaderboard(label) {
+      document.querySelectorAll(".leaderboard-tabs button").forEach((b) => {
+        b.classList.toggle("active", b.dataset.label === label);
+      });
+      const list = document.getElementById("leaderboard-list");
+      list.innerHTML = '<li class="muted">Loading...</li>';
+      fetch(`/api/leaderboard?label=${encodeURIComponent(label)}&limit=25`)
+        .then((r) => r.json())
+        .then((rows) => {
+          list.innerHTML = rows.length
+            ? rows.map((r, i) => `<li><span><span class="lb-rank">${i + 1}</span>${escapeHtml(r.name)}</span><span class="lb-score">${r.player_score}</span></li>`).join("")
+            : '<li class="muted">No scores yet — be the first.</li>';
+        })
+        .catch(() => {
+          list.innerHTML = '<li class="muted">Couldn\'t load leaderboard.</li>';
+        });
+    }
+
+    document.querySelectorAll(".leaderboard-tabs button").forEach((b) => {
+      b.addEventListener("click", () => loadLeaderboard(b.dataset.label));
+    });
+
+    loadLeaderboard("human");
+  </script>
+</body>
+</html>

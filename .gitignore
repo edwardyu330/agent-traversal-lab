@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+.ipynb_checkpoints/
+*.egg-info/
+.env
+.secrets/
+analysis/report.md
+*.log
+*.code-workspace

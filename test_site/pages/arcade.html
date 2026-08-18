@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>The Turing Arcade</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, Helvetica, Arial, sans-serif;
+      margin: 0; background: #0d0f0d; color: #f0f0ec; min-height: 100vh;
+      display: flex; flex-direction: column;
+    }
+    header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 14px 24px; border-bottom: 1px solid #232823;
+    }
+    header .brand { font-weight: 700; font-size: 16px; }
+    header .score {
+      font-variant-numeric: tabular-nums; font-feature-settings: "tnum";
+      font-size: 15px; color: #6fcf97;
+    }
+    main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
+    #arcade-root { width: 100%; max-width: 720px; min-height: 420px; display: flex; align-items: center; justify-content: center; position: relative; }
+
+    .arcade-stage { width: 100%; text-align: center; }
+    .arcade-instruction { font-size: 18px; margin: 0 0 20px; }
+    .arcade-instruction strong { color: #6fcf97; }
+
+    .arcade-countdown {
+      font-size: 64px; font-weight: 700; font-variant-numeric: tabular-nums;
+      color: #6fcf97;
+    }
+    .arcade-countdown.pop { animation: arcadePop 550ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+    @keyframes arcadePop {
+      0% { transform: scale(0.5); opacity: 0; }
+      55% { transform: scale(1.15); opacity: 1; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    .fade-in { animation: arcadeFadeUp 320ms ease; }
+    @keyframes arcadeFadeUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .arcade-countdown, .arcade-stage, .fade-in, .pop, .arcade-mole { transition: none !important; animation: none !important; }
+    }
+
+    .arcade-canvas { width: 100%; height: 340px; border-radius: 10px; display: block; cursor: pointer; }
+
+    .arcade-hidden-instruction {
+      position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; padding: 0; margin: -1px;
+    }
+    .arcade-instruction-canvas { display: block; margin: 0 auto 16px; border-radius: 6px; }
+
+    .arcade-shape-field { position: relative; height: 260px; margin-top: 20px; }
+    .arcade-shape {
+      position: absolute; width: 56px; height: 56px; background: #3a5a40;
+      transform: translate(-50%, -50%); cursor: pointer; transition: transform 100ms ease;
+    }
+    .arcade-shape:hover { transform: translate(-50%, -50%) scale(1.08); }
+
+    .arcade-box-row { display: flex; gap: 14px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
+    .arcade-order-box {
+      width: 64px; height: 64px; background: #3a5a40; border-radius: 8px; cursor: pointer;
+      transition: transform 100ms ease;
+    }
+    .arcade-order-box:hover { transform: scale(1.08); }
+
+    .arcade-phrase-display { font-size: 24px; font-weight: 700; letter-spacing: 0.5px; margin-top: 20px; color: #6fcf97; }
+    .arcade-type-input {
+      width: 100%; max-width: 420px; padding: 12px 14px; border-radius: 8px; border: 1px solid #333;
+      background: #1a1d1a; color: #f0f0ec; font-size: 18px; margin-top: 20px; text-align: center;
+    }
+
+    .arcade-scatter-field { position: relative; height: 240px; margin-top: 16px; }
+    .arcade-scatter-word {
+      position: absolute; font-size: 17px; font-weight: 600; color: #f0f0ec;
+      background: #1a1d1a; border: 1px solid #333; border-radius: 6px; padding: 6px 12px;
+      transform: translate(-50%, -50%); transition: opacity 200ms ease, transform 200ms ease;
+    }
+    .arcade-scatter-word.found { opacity: 0.25; color: #6fcf97; text-decoration: line-through; transform: translate(-50%, -50%) scale(0.9); }
+
+    .arcade-ramp-grid {
+      display: grid; gap: 8px; max-width: 420px; margin: 20px auto 0;
+    }
+    .arcade-ramp-cell {
+      aspect-ratio: 1; border-radius: 6px; background: #3a5a40; cursor: pointer;
+      transition: transform 100ms ease;
+    }
+    .arcade-ramp-cell.target { background: #52a373; }
+    .arcade-ramp-cell:hover { transform: scale(1.06); }
+
+    .arcade-shift-field { position: relative; height: 280px; margin-top: 20px; }
+    .arcade-shift-target {
+      position: absolute; width: 64px; height: 64px; background: #3a5a40; border-radius: 8px;
+      cursor: pointer; transform: translate(-50%, -50%);
+    }
+
+    .arcade-mole-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 320px; margin: 20px auto 0;
+    }
+    .arcade-mole-cell {
+      position: relative; aspect-ratio: 1; background: #161916; border-radius: 8px;
+    }
+    .arcade-mole {
+      position: absolute; inset: 10%; border-radius: 50%; cursor: pointer;
+      animation: arcadeMolePop 150ms ease;
+    }
+    .arcade-mole.safe { background: #6fcf97; }
+    .arcade-mole.trap { background: #e07a5f; }
+    @keyframes arcadeMolePop {
+      from { transform: scale(0.4); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+
+    .privacy-note { font-size: 12px; color: #888; padding: 8px 24px; border-bottom: 1px solid #1a1d1a; }
+
+    .arcade-landing { max-width: 480px; text-align: center; }
+    .arcade-landing h1 { font-size: 28px; margin: 0 0 14px; }
+    .arcade-landing p { color: #ccc; line-height: 1.6; margin: 0 0 12px; }
+    .arcade-landing ul { text-align: left; color: #ccc; line-height: 1.8; display: inline-block; margin: 12px 0 28px; }
+    .start-btn {
+      background: #3a5a40; color: #fff; border: none; border-radius: 6px;
+      padding: 14px 30px; font-size: 16px; font-weight: 700; cursor: pointer;
+    }
+    .start-btn:hover { background: #2f4a34; }
+
+    .leaderboard-tabs { display: flex; justify-content: center; gap: 8px; margin: 24px 0 12px; }
+    .leaderboard-tabs button {
+      background: #1a1d1a; color: #ccc; font-weight: 500; padding: 7px 14px; font-size: 13px;
+    }
+    .leaderboard-tabs button.active { background: #3a5a40; color: #fff; }
+    #leaderboard-list { list-style: none; padding: 0; margin: 0; max-width: 320px; margin: 0 auto; text-align: left; }
+    #leaderboard-list li {
+      display: flex; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid #1a1d1a;
+      font-size: 14px;
+    }
+    #leaderboard-list li:first-child { color: #6fcf97; font-weight: 600; }
+    .lb-score { font-variant-numeric: tabular-nums; }
+
+    .arcade-reveal { width: 100%; max-width: 480px; text-align: center; }
+    .arcade-reveal h1 { font-size: 22px; margin-bottom: 4px; }
+    .stat-row { display: flex; justify-content: center; gap: 28px; margin: 20px 0; }
+    .stat { text-align: center; }
+    .stat .value { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; color: #6fcf97; }
+    .stat .label { font-size: 12px; color: #999; margin-top: 2px; }
+    .verdict-text { font-size: 17px; font-weight: 600; margin: 20px 0 16px; }
+    #reveal-form { margin-top: 12px; }
+    #reveal-form label { display: inline-block; margin: 0 12px 12px 0; font-size: 14px; }
+    #reveal-form input[type=text] {
+      width: 100%; max-width: 320px; padding: 9px 10px; border-radius: 6px; border: 1px solid #333;
+      background: #1a1d1a; color: #f0f0ec; font-size: 14px; margin: 10px 0;
+    }
+    button, input[type=submit] {
+      background: #3a5a40; color: #fff; border: none; border-radius: 6px;
+      padding: 10px 18px; cursor: pointer; font-size: 14px; font-weight: 600;
+    }
+    button:hover, input[type=submit]:hover { background: #2f4a34; }
+    .muted { color: #888; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="brand">The Turing Arcade</p>
+    <nav style="display:flex; align-items:center; gap:18px;">
+      <a href="/leaderboard" style="color:#ccc; font-size:13px; text-decoration:none;">Leaderboard</a>
+      <p class="score" style="margin:0;">Score: <span id="live-score">0</span></p>
+    </nav>
+  </header>
+  <p class="privacy-note">
+    Research project on detecting automated (bot/agent) web traffic. Playing
+    captures mouse/click/keystroke <em>timing</em> and browser fingerprint data
+    (never keystroke content). Name and email at the end are optional and used
+    only for the leaderboard / occasional updates — email is never shown publicly.
+  </p>
+  <main>
+    <div id="arcade-landing" class="arcade-landing">
+      <h1>Prove you're human. Or don't.</h1>
+      <p>
+        Play through a quick gauntlet of mini-games — reaction, perception, memory,
+        precision. When you're done, we'll guess whether you were a human, a bot
+        script, or an AI agent. Then you tell us which one you actually were.
+      </p>
+      <ul>
+        <li>~7 short stages, most under 10 seconds each</li>
+        <li>No sign-up required to play</li>
+        <li>Score goes on the leaderboard for your category</li>
+      </ul>
+      <p><button id="start-arcade" class="start-btn">Start the Gauntlet →</button></p>
+    </div>
+    <div id="arcade-root" style="display:none;"></div>
+    <div id="arcade-reveal" class="arcade-reveal" style="display:none;"></div>
+  </main>
+
+  <script>window.ARCADE_STAGES = [];</script>
+  <!-- Order alternates fun/research per the original design intent: open with a
+       fast hook, don't cluster the clinical stages together. -->
+  <script src="/static/arcade_stages/c1_flash.js"></script>
+  <script src="/static/arcade_stages/a1_perception.js"></script>
+  <script src="/static/arcade_stages/c4_whack_a_mole.js"></script>
+  <script src="/static/arcade_stages/a2_visual_dom.js"></script>
+  <script src="/static/arcade_stages/b1_layout_shift.js"></script>
+  <script src="/static/arcade_stages/a5_type_phrase.js"></script>
+  <script src="/static/arcade_stages/a4_complexity_ramp.js"></script>
+  <script src="/static/arcade.js"></script>
+  <script>
+    (function () {
+      const landing = document.getElementById("arcade-landing");
+      const root = document.getElementById("arcade-root");
+      const reveal = document.getElementById("arcade-reveal");
+      const liveScore = document.getElementById("live-score");
+
+      // Player names are free text the leaderboard renders back to every future
+      // visitor — must never go into innerHTML unescaped (stored XSS otherwise).
+      function escapeHtml(s) {
+        const div = document.createElement("div");
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function loadLeaderboard(label) {
+        document.querySelectorAll(".leaderboard-tabs button").forEach((b) => {
+          b.classList.toggle("active", b.dataset.label === label);
+        });
+        const list = document.getElementById("leaderboard-list");
+        list.innerHTML = '<li class="muted">Loading...</li>';
+        fetch(`/api/leaderboard?label=${encodeURIComponent(label)}`)
+          .then((r) => r.json())
+          .then((rows) => {
+            list.innerHTML = rows.length
+              ? rows.map((r) => `<li><span class="lb-name">${escapeHtml(r.name)}</span><span class="lb-score">${r.player_score}</span></li>`).join("")
+              : '<li class="muted">No scores yet — be the first.</li>';
+          })
+          .catch(() => {
+            list.innerHTML = '<li class="muted">Couldn\'t load leaderboard.</li>';
+          });
+      }
+
+      function renderReveal(result) {
+        root.style.display = "none";
+        reveal.style.display = "block";
+        reveal.classList.add("fade-in");
+        liveScore.textContent = String(result.playerScore);
+
+        const reactionMs = result.stageResults.c1_flash_reaction && result.stageResults.c1_flash_reaction.extra
+          ? result.stageResults.c1_flash_reaction.extra.reaction_ms : null;
+        const typing = result.stageResults.a5_type_phrase && result.stageResults.a5_type_phrase.extra;
+        const wpm = typing && typing.part1 ? typing.part1.wpm : null;
+
+        reveal.innerHTML = `
+          <h1>Run complete</h1>
+          <div class="stat-row">
+            <div class="stat"><div class="value">${result.playerScore}</div><div class="label">SCORE</div></div>
+            <div class="stat"><div class="value">${reactionMs !== null ? Math.round(reactionMs) + "ms" : "—"}</div><div class="label">REACTION</div></div>
+            <div class="stat"><div class="value">${wpm !== null ? wpm : "—"}</div><div class="label">WPM</div></div>
+          </div>
+          <div id="verdict-loading">Analyzing your session...</div>
+          <div id="verdict-block" style="display:none;">
+            <p class="verdict-text" id="verdict-text"></p>
+            <form id="reveal-form">
+              <label for="player-name">Name (for the leaderboard)</label>
+              <input type="text" id="player-name" placeholder="Anonymous" maxlength="40" />
+              <label for="player-email">Email (optional, not shown publicly)</label>
+              <input type="email" id="player-email" placeholder="you@example.com" />
+              <p style="margin:16px 0 8px;">What were you really?</p>
+              <label><input type="radio" name="claimed_type" value="human" checked /> Human</label>
+              <label><input type="radio" name="claimed_type" value="bot_script" /> Bot / script</label>
+              <label><input type="radio" name="claimed_type" value="agent" /> AI agent</label>
+              <br />
+              <input type="text" id="tool" placeholder="Tool (optional) — Selenium, Browser Use, custom Playwright" />
+              <p><input type="submit" value="Reveal" /></p>
+            </form>
+          </div>
+          <div id="reveal-thanks" style="display:none;">
+            <p>Thanks — your answer has been recorded.</p>
+            <p class="muted">Play again any time.</p>
+            <div class="leaderboard-tabs">
+              <button type="button" data-label="human">Human</button>
+              <button type="button" data-label="bot_script">Bot</button>
+              <button type="button" data-label="agent">Agent</button>
+            </div>
+            <ol id="leaderboard-list"></ol>
+          </div>
+        `;
+
+        fetch(`/api/verdict/${result.sessionId}`)
+          .then((r) => r.json())
+          .then((data) => {
+            document.getElementById("verdict-loading").style.display = "none";
+            document.getElementById("verdict-text").textContent =
+              `We think you were: ${data.verdict}, ${data.confidence}% confident.`;
+            document.getElementById("verdict-block").style.display = "block";
+          })
+          .catch(() => {
+            document.getElementById("verdict-loading").textContent = "Couldn't compute a verdict.";
+          });
+
+        document.querySelectorAll(".leaderboard-tabs button").forEach((b) => {
+          b.addEventListener("click", () => loadLeaderboard(b.dataset.label));
+        });
+
+        reveal.addEventListener("submit", function handler(e) {
+          if (e.target.id !== "reveal-form") return;
+          e.preventDefault();
+          const claimedType = e.target.querySelector('input[name="claimed_type"]:checked').value;
+          const tool = document.getElementById("tool").value.trim();
+          const name = document.getElementById("player-name").value.trim();
+          const email = document.getElementById("player-email").value.trim();
+          fetch("/api/reveal", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: result.sessionId,
+              claimed_type: claimedType,
+              tool: tool || null,
+              player_score: result.playerScore,
+              name: name || null,
+              email: email || null,
+            }),
+          }).then(() => {
+            document.getElementById("verdict-block").style.display = "none";
+            document.getElementById("reveal-thanks").style.display = "block";
+            loadLeaderboard(claimedType);
+          });
+          reveal.removeEventListener("submit", handler);
+        });
+      }
+
+      function startGauntlet() {
+        landing.style.display = "none";
+        root.style.display = "flex";
+        ARCADE.runArcade(root, renderReveal);
+      }
+
+      if (ARCADE.label === "pending") {
+        // Telemetry (session registration, ambient capture) doesn't start until
+        // this click — same principle as /play keeping collector.js off its
+        // landing page.
+        document.getElementById("start-arcade").addEventListener("click", startGauntlet);
+      } else {
+        // Generator script run (?label=agent_raw_cdp|agent_llm_cdp) — label/trust
+        // are already set from session-start, no human is here to click Start.
+        startGauntlet();
+      }
+    })();
+  </script>
+</body>
+</html>

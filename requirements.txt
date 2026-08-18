@@ -1,0 +1,17 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+jinja2>=3.1
+python-multipart>=0.0.9
+
+# Phase 2 (agent traffic generation) — not needed to run test_site alone
+playwright>=1.47
+browser-use>=0.1.40
+python-dotenv>=1.0
+
+# Phase 3/4 (signal extraction + analysis)
+pandas>=2.2
+tabulate>=0.9
+
+# /arcade reveal -> Google Sheets sync (optional — see CLAUDE.md's "Google Sheets
+# sync" section; the reveal flow degrades gracefully with this unconfigured)
+gspread>=6.0
