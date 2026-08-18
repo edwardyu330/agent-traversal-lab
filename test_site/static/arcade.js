@@ -13,6 +13,21 @@
   const FLUSH_INTERVAL_MS = 2000;
   const JANK_THRESHOLD_MS = 20; // worse than 50fps — mirrored server-side in arcade_metrics.py
 
+  // Bump this whenever the stage roster or capture logic changes materially.
+  // Stamped on the session at creation (sessions.build_version) so audit_dataset.py
+  // can group/filter by it instead of hand-inspecting which stage_results exist —
+  // that's how we discovered 5 of 9 arcade sessions predated three stages this
+  // audit pass added. v4 = trackPageLoadSignals() — /arcade never sent a
+  // page_load_signals event at all, leaving webdriver_artifacts.py's entire
+  // signal set (webdriver_flag/suspicious_webgl_renderer/page_load_count)
+  // structurally blind on the primary data-collection surface; found while
+  // investigating why agent_raw_cdp's Bot catch rate was so low. v3 = the
+  // stale_frame_offset_ms/click_offset_scatter/coalesced_event_ratio fixes plus
+  // stale_element_interaction/has_pointerrawupdate; v2 = the original 7-stage
+  // roster before those capture fixes (unstamped in the DB — inferred from
+  // field absence, not a real recorded value).
+  const ARCADE_BUILD_VERSION = "v4-2026-08-18";
+
   // Generator scripts (run_playwright_raw.py, run_browser_use.py) hit
   // /arcade?label=agent_raw_cdp|agent_llm_cdp to get a pre-labeled, trusted
   // session — same convention collector.js already uses for the storefront.
@@ -20,7 +35,7 @@
   // at reveal. A generator session never needs to submit the reveal form at
   // all: label/trust are already correct from session-start (server.py's
   // /api/session/start sets trust='verified' for any non-"pending" label).
-  const GENERATOR_LABELS = new Set(["agent_raw_cdp", "agent_llm_cdp"]);
+  const GENERATOR_LABELS = new Set(["agent_raw_cdp", "agent_llm_cdp", "agent_stealth_cdp"]);
 
   function resolveLabel() {
     const fromQuery = new URLSearchParams(location.search).get("label");
@@ -51,8 +66,50 @@
     return fetch("/api/session/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, label: sessionLabel, user_agent: navigator.userAgent, first_page: "/arcade" }),
+      body: JSON.stringify({
+        session_id: sessionId, label: sessionLabel, user_agent: navigator.userAgent,
+        first_page: "/arcade", build_version: ARCADE_BUILD_VERSION,
+      }),
     }).catch(() => {});
+  }
+
+  // Ported from collector.js's identical helper — webdriver_artifacts.py's
+  // webdriver_flag/suspicious_webgl_renderer/page_load_count all read off a
+  // page_load_signals event that only collector.js (storefront/`/play`) was
+  // ever sending. /arcade never sent one at all, which meant that whole signal
+  // track — the ONLY thing that told apart a raw-CDP session that patches
+  // nothing (webdriver_flag=true, WebGL falls back to SwiftShader) from one
+  // that does — was silently blind on the surface that's now the primary data
+  // collection path. Found by checking why agent_raw_cdp's catch rate was so
+  // low: every current-build session had webdriver_flag/suspicious_webgl_renderer
+  // reading false regardless of how the browser was actually launched, simply
+  // because the event that would have carried that information never existed.
+  function getWebglInfo() {
+    try {
+      const canvas = document.createElement("canvas");
+      const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+      if (!gl) return { supported: false };
+      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+      return {
+        supported: true,
+        vendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+        renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+      };
+    } catch (e) {
+      return { supported: false, error: String(e) };
+    }
+  }
+
+  function trackPageLoadSignals() {
+    track("page_load_signals", {
+      webdriver: navigator.webdriver === true,
+      webgl: getWebglInfo(),
+      viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
+      languages: navigator.languages,
+      plugins_length: navigator.plugins ? navigator.plugins.length : null,
+      hardware_concurrency: navigator.hardwareConcurrency,
+      referrer: document.referrer,
+    });
   }
 
   window.addEventListener("pagehide", () => flush(true));
@@ -70,8 +127,11 @@
   let lastPressure = 0;
   let lastTiltX = 0;
   let lastTiltY = 0;
+  let batchSeq = 0; // groups samples from the same pointerHandler call, so
+                     // extra-samples-from-coalescing can be summed once per
+                     // batch server-side instead of overcounted per-sample
 
-  function samplePointer(e, coalesced) {
+  function samplePointer(e, coalesced, batchSize, seq) {
     track("pointer_sample", {
       stage_id: currentStageId,
       x: e.clientX,
@@ -82,7 +142,15 @@
       tilt_y: e.tiltY ?? lastTiltY,
       movement_x: e.movementX ?? 0,
       movement_y: e.movementY ?? 0,
+      // "coalesced" means getCoalescedEvents() actually returned >1 entries —
+      // it near-always returns a 1-length array containing just the event
+      // itself even with zero real merging, so ">0" (the old check) is always
+      // true and meaningless. batch_size/batch_seq let the server sum real
+      // extra samples per delivered event without double-counting a batch
+      // once per one of its own samples.
       coalesced: !!coalesced,
+      batch_size: batchSize,
+      batch_seq: seq,
     });
   }
 
@@ -92,29 +160,75 @@
     if (e.tiltX !== undefined) lastTiltX = e.tiltX;
     if (e.tiltY !== undefined) lastTiltY = e.tiltY;
 
+    const seq = batchSeq++;
     if (typeof e.getCoalescedEvents === "function") {
       const coalesced = e.getCoalescedEvents();
-      if (coalesced.length > 0) {
-        for (const ce of coalesced) samplePointer(ce, true);
+      if (coalesced.length > 1) {
+        for (const ce of coalesced) samplePointer(ce, true, coalesced.length, seq);
         return;
       }
     }
-    samplePointer(e, false);
+    samplePointer(e, false, 1, seq);
   }
 
   // pointerrawupdate (Chrome/Edge, unthrottled, no coalescing needed — every raw
   // sample already delivered) falls back to pointermove (broader support, use
   // getCoalescedEvents() on it to recover sub-frame resolution) if unavailable.
-  if ("onpointerrawupdate" in window) {
+  // Confirmed false in Playwright-bundled headless Chromium — logged once per
+  // session (not inferred from pointer_sample_density after the fact) so this
+  // stops being a guess: it's both a diagnostic for capture-path audits and,
+  // if real end-user Chrome has it while a given automation stack doesn't, a
+  // free binary fingerprint of that stack.
+  const hasPointerRawUpdate = "onpointerrawupdate" in window;
+  track("arcade_capabilities", { has_pointerrawupdate: hasPointerRawUpdate });
+  if (hasPointerRawUpdate) {
     document.addEventListener("pointerrawupdate", pointerHandler);
   } else {
     document.addEventListener("pointermove", pointerHandler);
   }
 
+  // Click-target rect comes from the GAME's own state, not e.target — reading
+  // e.target.getBoundingClientRect() was returning (0,0)-origin garbage
+  // whenever the click landed on page background (no specific element) or on
+  // an element that had already been removed from the DOM by the time this
+  // ambient listener ran (bubble order means an element's OWN handler, which
+  // can synchronously remove it, always fires before this one). Each stage's
+  // own per-element click handler calls setClickTargetRect() as its first
+  // action — before any removal — so the rect is always captured while valid.
+  // No call = the click hit background/no game element at all, and is
+  // correctly excluded from offset stats rather than inflating them.
+  let pendingClickTargetRect = null;
+  let pendingStaleInteraction = null; // null = no stage registered a target at all (ambient miss); true/false = it did
+
+  function setClickTargetRect(rect, staleInteraction) {
+    pendingClickTargetRect = rect;
+    pendingStaleInteraction = staleInteraction === undefined ? false : staleInteraction;
+  }
+
+  // Purely cosmetic — a fire-and-forget overlay element that animates and
+  // removes itself on its own timer, never awaited by or blocking any game
+  // logic. Deliberately NOT wired into any stage's click-to-advance path: C4's
+  // round budget (MOLE_VISIBLE_MS=850 + 120ms gap, x10 rounds) is already
+  // close to the external generator scripts' poll-window ceiling, so adding
+  // even a short delay to the actual advancement logic risks breaking their
+  // timing assumptions. This effect exists alongside that path, not inside it.
+  function spawnClickPop(x, y, hit) {
+    const el = document.createElement("div");
+    el.className = "arcade-click-pop" + (hit ? "" : " miss");
+    el.style.left = x + "px";
+    el.style.top = y + "px";
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 400);
+  }
+
   document.addEventListener("click", (e) => {
-    const rect = e.target && e.target.getBoundingClientRect ? e.target.getBoundingClientRect() : null;
+    const rect = pendingClickTargetRect;
+    const staleInteraction = pendingStaleInteraction;
+    pendingClickTargetRect = null;
+    pendingStaleInteraction = null;
     const targetCx = rect ? rect.left + rect.width / 2 : null;
     const targetCy = rect ? rect.top + rect.height / 2 : null;
+    spawnClickPop(e.clientX, e.clientY, rect !== null);
     track("click_detail", {
       stage_id: currentStageId,
       x: e.clientX,
@@ -123,6 +237,13 @@
       target_cy: targetCy,
       offset_x: targetCx !== null ? e.clientX - targetCx : null,
       offset_y: targetCy !== null ? e.clientY - targetCy : null,
+      // See b1_layout_shift.js et al.'s click handlers: true means the game
+      // element this click landed on was already disconnected from the DOM
+      // (el.isConnected === false) at the moment ITS OWN handler ran — a real
+      // human/CDP click can never target an element that isn't live on
+      // screen; only a stale cached reference (screenshot-loop automation
+      // clicking on something it saw N steps ago) produces this.
+      stale_element_interaction: staleInteraction,
       is_trusted: e.isTrusted,
       pointer_type: e.pointerType || lastPointerType,
       pressure: e.pressure ?? lastPressure,
@@ -211,6 +332,7 @@
         track,
         onDone: resolve,
         prefersReducedMotion,
+        setClickTargetRect,
       });
     });
 
@@ -230,6 +352,7 @@
 
   async function runArcade(container, onComplete) {
     await registerSession();
+    trackPageLoadSignals();
 
     const startTs = performance.now();
     let playerScore = 0;

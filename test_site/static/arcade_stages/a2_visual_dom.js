@@ -57,7 +57,10 @@
         el.className = "arcade-order-box";
         el.style.order = String(orderValues[i]);
         el.dataset.domIndex = String(domIndex);
-        el.addEventListener("click", () => onBoxClick(domIndex));
+        el.addEventListener("click", () => {
+          ctx.setClickTargetRect(el.isConnected ? el.getBoundingClientRect() : null, !el.isConnected);
+          onBoxClick(domIndex);
+        });
         row.appendChild(el);
       }
 

@@ -37,6 +37,21 @@
     .band-block { color: #e07a5f; }
     .band-step_up { color: #f2cc8f; }
     .band-allow { color: #6fcf97; }
+
+    .rate-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+    .rate-card { background: #161916; border: 1px solid #232823; border-radius: 10px; padding: 16px 18px; }
+    .rate-card.good { border-color: #3a5a40; }
+    .rate-card.bad { border-color: #7a3d33; }
+    .rate-card.warn { border-color: #6b5a2a; }
+    .rate-title { font-size: 15px; font-weight: 700; }
+    .rate-sub { margin-top: 2px; margin-bottom: 12px; }
+    .rate-bar-track { height: 8px; border-radius: 4px; background: #232823; overflow: hidden; }
+    .rate-bar-fill { height: 100%; border-radius: 4px; background: #6fcf97; }
+    .rate-card.bad .rate-bar-fill { background: #e07a5f; }
+    .rate-card.warn .rate-bar-fill { background: #f2cc8f; }
+    .rate-value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 10px; }
+    .rate-caption { font-size: 12px; font-weight: 400; color: #888; margin-left: 4px; }
+    .rate-detail { font-size: 12px; color: #777; margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -73,39 +88,79 @@
           <div class="label">Trust = verified</div>
         </div>
       </div>
+      {% if overview.uncategorized_count %}
+      <p class="section-note" style="margin-top:10px;">
+        {{ overview.uncategorized_count }} session(s) excluded from every section below — pending/never
+        revealed, so there's no determination of Human/Bot/Agent for them at all yet. Still visible in the
+        Sessions table at the bottom.
+      </p>
+      {% endif %}
     </section>
 
     <section>
-      <h2>Sessions by label</h2>
-      <div class="card-row">
-        {% for label in labels %}
-        <div class="card">
-          <div class="value">{{ label_counts[label] }}</div>
-          <div class="label">{{ label }}</div>
+      <h2>Detection rates</h2>
+      <p class="section-note">
+        In the real world there are exactly three things a visitor can be: Human, Bot (scripted/mechanical
+        automation), or Agent (LLM-driven automation). Our own generator scripts and the scanner writeup
+        give us that ground truth here; for a real, unlabeled visitor the score can only ever say
+        automation-or-not (coarse_verdict is Bot/Human) — telling Bot from Agent for them requires their
+        own self-report. This section shows, for each of the three, the fraction where coarse_verdict
+        (overall_detection_score &ge; 50, the exact number a player's reveal screen shows) reads "Bot" —
+        the catch rate for Bot/Agent, the false-positive rate for Human. Band (block/step_up/allow) is the
+        finer-grained breakdown behind the same score, shown for context.
+      </p>
+      <div class="rate-grid">
+        {% for category in categories %}
+        {% set d = detection_rates[category] %}
+        <div class="rate-card {{ d.rating }}">
+          <div class="rate-title">{{ category }}</div>
+          <div class="rate-sub mono">n={{ d.n }}</div>
+          <div class="rate-bar-track"><div class="rate-bar-fill" style="width: {{ d.agent_rate_pct if d.agent_rate_pct is not none else 0 }}%"></div></div>
+          <div class="rate-value">
+            {{ d.agent_rate_pct if d.agent_rate_pct is not none else "—" }}{% if d.agent_rate_pct is not none %}%{% endif %}
+            <span class="rate-caption">{{ "flagged Bot" if d.is_automation else "false positive" }}</span>
+          </div>
+          <div class="rate-detail">{{ d.agent_flagged }}/{{ d.n }} sessions flagged</div>
+          <div class="rate-detail">
+            band:
+            {% for b in ["block", "step_up", "allow"] %}{{ b }}={{ band_dist[category].get(b, 0) }}{{ ", " if not loop.last else "" }}{% endfor %}
+          </div>
         </div>
         {% endfor %}
       </div>
     </section>
 
     <section>
-      <h2>Averages by label</h2>
+      <h2>Sessions by category</h2>
+      <div class="card-row">
+        {% for category in categories %}
+        <div class="card">
+          <div class="value">{{ category_counts[category] }}</div>
+          <div class="label">{{ category }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section>
+      <h2>Averages by category</h2>
       <p class="section-note">
         overall_detection_score = max(score, raw_automation_score) — what /api/verdict actually uses.
         score and raw_automation_score are the two feeder tracks, shown separately so it's visible
-        which one is carrying a given label; they're never summed. player_score is the honor-system,
+        which one is carrying a given category; they're never summed. player_score is the honor-system,
         leaderboard-facing number — only set for revealed /arcade sessions.
       </p>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>Label</th><th>Overall detection score</th><th>Arcade/curvature score</th><th>Raw-automation score</th><th>Player score</th></tr></thead>
+          <thead><tr><th>Category</th><th>Overall detection score</th><th>Arcade/curvature score</th><th>Raw-automation score</th><th>Player score</th></tr></thead>
           <tbody>
-            {% for label in labels %}
+            {% for category in categories %}
             <tr>
-              <td>{{ label }}</td>
-              <td><strong>{{ score_stats[label]["overall_detection_score"] }}</strong></td>
-              <td>{{ score_stats[label]["score"] }}</td>
-              <td>{{ score_stats[label]["raw_automation_score"] }}</td>
-              <td>{{ player_score_avg[label] if label in player_score_avg else "—" }}</td>
+              <td>{{ category }}</td>
+              <td><strong>{{ score_stats[category]["overall_detection_score"] }}</strong></td>
+              <td>{{ score_stats[category]["score"] }}</td>
+              <td>{{ score_stats[category]["raw_automation_score"] }}</td>
+              <td>{{ player_score_avg[category] if category in player_score_avg else "—" }}</td>
             </tr>
             {% endfor %}
           </tbody>
@@ -114,17 +169,17 @@
     </section>
 
     <section>
-      <h2>Signal averages, by label</h2>
-      <p class="section-note">Blank = no session with that label has produced this signal yet.</p>
+      <h2>Signal averages, by category</h2>
+      <p class="section-note">Blank = no session in that category has produced this signal yet.</p>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>Signal</th>{% for label in labels %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+          <thead><tr><th>Signal</th>{% for category in categories %}<th>{{ category }}</th>{% endfor %}</tr></thead>
           <tbody>
             {% for col in numeric_cols %}
             <tr>
               <td>{{ signal_labels.get(col, col) }}</td>
-              {% for label in labels %}
-              <td>{{ numeric_means[label][col] if numeric_means[label][col] is not none else "—" }}</td>
+              {% for category in categories %}
+              <td>{{ numeric_means[category][col] if numeric_means[category][col] is not none else "—" }}</td>
               {% endfor %}
             </tr>
             {% endfor %}
@@ -134,17 +189,17 @@
     </section>
 
     <section>
-      <h2>Boolean artifact rates, by label</h2>
+      <h2>Boolean artifact rates, by category</h2>
       <p class="section-note">Fraction of sessions where this was true (1.0 = always).</p>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>Signal</th>{% for label in labels %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+          <thead><tr><th>Signal</th>{% for category in categories %}<th>{{ category }}</th>{% endfor %}</tr></thead>
           <tbody>
             {% for col in bool_cols %}
             <tr>
               <td>{{ signal_labels.get(col, col) }}</td>
-              {% for label in labels %}
-              <td>{{ bool_rates[label][col] if bool_rates[label][col] is not none else "—" }}</td>
+              {% for category in categories %}
+              <td>{{ bool_rates[category][col] if bool_rates[category][col] is not none else "—" }}</td>
               {% endfor %}
             </tr>
             {% endfor %}
@@ -159,13 +214,13 @@
       <p style="margin-bottom:6px; font-size:13px;">{{ signal_labels.get(col, col) }}</p>
       <div class="table-scroll" style="margin-bottom:16px;">
         <table>
-          <thead><tr><th>Label</th><th>vision</th><th>dom</th><th>visible</th><th>ambiguous</th><th>visual</th><th>other</th><th>none</th></tr></thead>
+          <thead><tr><th>Category</th><th>vision</th><th>dom</th><th>visible</th><th>ambiguous</th><th>visual</th><th>other</th><th>none</th></tr></thead>
           <tbody>
-            {% for label in labels %}
+            {% for category in categories %}
             <tr>
-              <td>{{ label }}</td>
+              <td>{{ category }}</td>
               {% for v in ["vision", "dom", "visible", "ambiguous", "visual", "other", "none"] %}
-              <td>{{ categorical_dist[col][label].get(v, "") if categorical_dist[col].get(label) else "" }}</td>
+              <td>{{ categorical_dist[col][category].get(v, "") if categorical_dist[col].get(category) else "" }}</td>
               {% endfor %}
             </tr>
             {% endfor %}
@@ -176,12 +231,42 @@
     </section>
 
     <section>
+      <h2>Live rule weights</h2>
+      <p class="section-note">
+        scoring/weights_store.py — loaded fresh on every score, nudged &plusmn;4 points on every
+        /api/reveal where the verdict shown didn't match what the player claimed to be (perceptron-
+        style: correct verdicts change nothing). This IS the algorithm changing on its own; it's also
+        wired to an honor-system, unverified claim, so treat drift here as a thing to watch, not
+        something to blindly trust. Clamped to 0-80 per rule.
+      </p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Rule</th><th>Current weight</th><th>Default</th><th>Drift</th></tr></thead>
+          <tbody>
+            {% for w in weight_rows %}
+            <tr>
+              <td>{{ w.rule }}</td>
+              <td><strong>{{ w.current }}</strong></td>
+              <td class="muted">{{ w.default }}</td>
+              <td class="{{ 'band-block' if w.delta > 0 else ('band-allow' if w.delta < 0 else 'muted') }}">
+                {{ "+" if w.delta > 0 else "" }}{{ w.delta }}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
       <h2>Sessions</h2>
+      <p class="section-note">Raw label (mono, under the category) is our own ground-truth tag — not
+        something a real-world detection could know on its own.</p>
       <div class="table-scroll">
         <table>
           <thead>
             <tr>
-              <th>session_id</th><th>label</th><th>trust</th><th>score</th><th>band</th>
+              <th>session_id</th><th>label</th><th>trust</th><th>verdict</th><th>score</th><th>band</th>
               <th>player_score</th><th>name</th><th>tool</th><th>started_at</th><th>revealed_at</th>
             </tr>
           </thead>
@@ -189,8 +274,12 @@
             {% for s in sessions %}
             <tr>
               <td class="mono">{{ s.session_id[:8] }}</td>
-              <td>{{ s.label }}</td>
+              <td>
+                {{ s.category if s.category is defined and s.category else "Unclassified" }}<br>
+                <span class="mono">{{ s.label }}</span>
+              </td>
               <td>{{ s.trust or "—" }}</td>
+              <td class="{{ 'band-block' if s.verdict == 'Bot' else 'band-allow' }}">{{ s.verdict if s.verdict is defined else "—" }}</td>
               <td>{{ s.overall_detection_score if s.overall_detection_score is defined else "—" }}</td>
               <td class="band-{{ s.band }}">{{ s.band or "—" }}</td>
               <td>{{ s.player_score if s.player_score is not none else "—" }}</td>

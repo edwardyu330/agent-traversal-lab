@@ -79,7 +79,10 @@
         el.className = "arcade-shape";
         el.style.cssText = `left:${positions[i]}%; top:${20 + (i % 2) * 40}%; ${shapeStyle(kind)}`;
         el.dataset.kind = kind;
-        el.addEventListener("click", () => onShapeClick(kind));
+        el.addEventListener("click", () => {
+          ctx.setClickTargetRect(el.isConnected ? el.getBoundingClientRect() : null, !el.isConnected);
+          onShapeClick(kind);
+        });
         field.appendChild(el);
         shapeState.push({ el, kind, x: 0, y: 0, vx: 0, vy: 0, rot: 0, rotSpeed: 0 });
       });

@@ -1,6 +1,15 @@
 """Read-only audit of traversal.db composition and telemetry quality — run
 before seeding more data or touching any scoring weights. Never mutates the
 database. See the report this produces for what's populated vs. broken.
+
+Telemetry-quality checks (section 2) are scoped to the CURRENT build_version
+by default — sessions.build_version is stamped at creation (see arcade.js's
+ARCADE_BUILD_VERSION) specifically because this dataset already once silently
+mixed sessions across 3 different stage rosters without anyone noticing until
+someone checked by hand. "Current" is inferred as whichever build_version the
+most recently started arcade session has; sessions on any other value (or
+with none stamped at all — everything before this field existed) are counted
+separately and excluded from the metric-quality numbers, not blended in.
 """
 
 import statistics
@@ -24,6 +33,7 @@ NUMERIC_METRICS = [
     "cadence_cv",
     "pointer_sample_density",
     "coalesced_event_ratio",
+    "coalesced_extra_samples_per_batch",
     "click_offset_scatter",
     "correction_count",
     "overshoot_rate",
@@ -31,6 +41,7 @@ NUMERIC_METRICS = [
     "frame_jank_ratio",
     "latency_complexity_slope",
     "stale_frame_offset_ms",
+    "stale_element_interaction_rate",
     "ipi_cv",
     "backspace_rate",
     "path_optimality",
@@ -38,9 +49,13 @@ NUMERIC_METRICS = [
     "dead_end_rate",
 ]
 CATEGORICAL_METRICS = ["perception_mode", "visual_vs_dom_order_choice"]
-BOOL_METRICS = ["dom_only_target_hit", "all_clicks_trusted"]
+BOOL_METRICS = ["dom_only_target_hit", "all_clicks_trusted", "has_pointerrawupdate", "no_pointer_or_click_telemetry"]
 
 JANK_COMPROMISED_THRESHOLD = 0.10  # >10% dropped frames = timing data suspect
+# A human perception→act loop is roughly 200-300ms; the old distance÷velocity
+# computation produced 1200-4100ms garbage. This range is a sanity check on the
+# fixed position-history-matching approach, not a hard product threshold.
+STALE_OFFSET_PLAUSIBLE_MAX_MS = 1000
 
 
 def classify_surface(session: dict) -> str:
@@ -84,14 +99,25 @@ def main() -> None:
             print(f"  {k}: {v}")
 
         arcade_ids = [sid for sid, s in sessions.items() if classify_surface(s) == "arcade"]
-        print(f"\n--- Arcade completion ({len(arcade_ids)} arcade-surface sessions) ---")
+        by_build = Counter(sessions[sid].get("build_version") for sid in arcade_ids)
+        print(f"\nArcade sessions by build_version ({len(arcade_ids)} total):")
+        for k, v in by_build.most_common():
+            print(f"  {k or '(unstamped — predates build_version field)'}: {v}")
 
+        # "Current" = whatever build the most recently started arcade session has.
+        arcade_by_start = sorted(arcade_ids, key=lambda sid: sessions[sid].get("started_at") or "")
+        current_build = sessions[arcade_by_start[-1]].get("build_version") if arcade_by_start else None
+        current_ids = [sid for sid in arcade_ids if sessions[sid].get("build_version") == current_build]
+        legacy_ids = [sid for sid in arcade_ids if sid not in current_ids]
+        print(f"\nCurrent build_version (inferred): {current_build!r}")
+        print(f"  {len(current_ids)} session(s) on current build, {len(legacy_ids)} legacy/other — "
+              f"section 2 below uses ONLY the {len(current_ids)} current-build session(s).")
+
+        print(f"\n--- Arcade completion, ALL versions ({len(arcade_ids)} arcade-surface sessions) ---")
         completed = 0
         drop_at = Counter()
-        events_by_id = {}
         for sid in arcade_ids:
             events = get_events(conn, sid)
-            events_by_id[sid] = events
             reached, is_complete = stage_progress(events)
             if is_complete:
                 completed += 1
@@ -103,19 +129,21 @@ def main() -> None:
                     last = max(idxs)
                     nxt = ARCADE_STAGE_ORDER[last + 1] if last + 1 < len(ARCADE_STAGE_ORDER) else "(reveal step)"
                     drop_at[f"dropped before/at: {nxt}"] += 1
-
-        print(f"Completed all {len(ARCADE_STAGE_ORDER)} stages: {completed}/{len(arcade_ids)}")
+        print(f"Completed all {len(ARCADE_STAGE_ORDER)} current-roster stages: {completed}/{len(arcade_ids)}")
+        print("(Note: sessions on an older build may show as incomplete here even though they finished")
+        print(" everything THEIR roster had — this count is against the CURRENT stage list on purpose,")
+        print(" to catch roster growth, but don't read it as a drop-off rate without checking build_version.)")
         if drop_at:
             print("Drop-off breakdown (stage they never reached a result for):")
             for k, v in drop_at.most_common():
                 print(f"  {k}: {v}")
 
         # ==================================================================
-        section("2. TELEMETRY QUALITY — arcade_metrics.py fields")
+        section("2. TELEMETRY QUALITY — arcade_metrics.py fields (current build only)")
         # ==================================================================
-        arcade_results = {sid: arcade_extract(sid, conn) for sid in arcade_ids}
-        n = len(arcade_ids)
-        print(f"\nDenominator: {n} arcade-surface sessions\n")
+        arcade_results = {sid: arcade_extract(sid, conn) for sid in current_ids}
+        n = len(current_ids)
+        print(f"\nDenominator: {n} current-build arcade sessions (excludes {len(legacy_ids)} legacy)\n")
 
         def report_numeric(name):
             vals = [r[name] for r in arcade_results.values() if r[name] is not None]
@@ -161,19 +189,19 @@ def main() -> None:
             report_numeric(m)
 
         # ------------------------------------------------------------------
-        section("2a. SPECIFIC SANITY CHECKS")
+        section("2a. SPECIFIC SANITY CHECKS (current build only)")
         # ------------------------------------------------------------------
         densities = [r["pointer_sample_density"] for r in arcade_results.values() if r["pointer_sample_density"] is not None]
-        print("\npointer_sample_density check (tens vs hundreds/sec):")
+        print("\npointer_sample_density check (tens vs hundreds/sec) — NOT being changed this pass, logging only:")
         if densities:
             print(f"  values: {[round(d, 1) for d in densities]}")
             print(f"  mean: {statistics.mean(densities):.1f} samples/sec")
-            if statistics.mean(densities) < 50:
-                print("  *** LOW — consistent with throttled mousemove, not raw pointerrawupdate/coalesced capture ***")
-            else:
-                print("  Consistent with unthrottled high-frequency capture.")
         else:
             print("  no data")
+
+        rawupdate_vals = [r["has_pointerrawupdate"] for r in arcade_results.values() if r["has_pointerrawupdate"] is not None]
+        print(f"  has_pointerrawupdate populated: {len(rawupdate_vals)}/{n}  values: {rawupdate_vals}")
+        print("  (direct evidence now, not inferred from density — cross-check against pointer_sample_density above)")
 
         print("\nFrame jank check:")
         jank_vals = [r["frame_jank_ratio"] for r in arcade_results.values() if r["frame_jank_ratio"] is not None]
@@ -183,24 +211,32 @@ def main() -> None:
             print(f"  jank ratios: {[round(j, 4) for j in jank_vals]}")
         else:
             print("  no data")
-        print("  low_quality flag exists in codebase: NO (grepped — frame_jank_ratio is computed but never used to flag/gate anything)")
+        print("  low_quality flag: still not built (deferred to pre-public-beta, per instruction) — jank is under 2% everywhere so far")
 
         print("\nevent.isTrusted check:")
         trusted_vals = [r["all_clicks_trusted"] for r in arcade_results.values() if r["all_clicks_trusted"] is not None]
         print(f"  all_clicks_trusted populated: {len(trusted_vals)}/{n}")
         print(f"  values: {trusted_vals}")
 
-        print("\nstale_frame_offset_ms sanity (B1):")
+        print("\nstale_element_interaction_rate check (NEW — clicks on already-removed elements):")
+        stale_int_vals = [r["stale_element_interaction_rate"] for r in arcade_results.values() if r["stale_element_interaction_rate"] is not None]
+        if stale_int_vals:
+            print(f"  values: {[round(v, 3) for v in stale_int_vals]}")
+        else:
+            print("  no data yet")
+
+        print("\nstale_frame_offset_ms sanity (B1) — rewritten to position-history matching, no velocity division:")
         stale_vals = [r["stale_frame_offset_ms"] for r in arcade_results.values() if r["stale_frame_offset_ms"] is not None]
         if stale_vals:
             print(f"  values: {[round(v, 1) for v in stale_vals]}")
-            implausible = [v for v in stale_vals if v > 5000 or v < 0]
+            implausible = [v for v in stale_vals if v > STALE_OFFSET_PLAUSIBLE_MAX_MS or v < 0]
             if implausible:
-                print(f"  *** {len(implausible)} implausible value(s) (>5000ms or negative) — check for near-zero-speed divide ***")
+                print(f"  *** {len(implausible)} value(s) outside 0-{STALE_OFFSET_PLAUSIBLE_MAX_MS}ms — "
+                      f"human perception-to-act is ~200-300ms, so this needs another look before trusting it ***")
             else:
-                print("  all values in plausible range")
+                print(f"  all values within 0-{STALE_OFFSET_PLAUSIBLE_MAX_MS}ms")
         else:
-            print("  no B1 data yet")
+            print("  no B1 data on the current build yet")
 
 
 if __name__ == "__main__":

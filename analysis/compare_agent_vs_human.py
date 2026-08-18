@@ -32,6 +32,9 @@ NUMERIC_SIGNALS = [
     ("arcade_metrics", "stale_frame_offset_ms"),
     ("arcade_metrics", "ipi_cv"),
     ("arcade_metrics", "backspace_rate"),
+    ("arcade_metrics", "coalesced_event_ratio"),
+    ("arcade_metrics", "coalesced_extra_samples_per_batch"),
+    ("arcade_metrics", "stale_element_interaction_rate"),
 ]
 BOOL_SIGNALS = [
     ("webdriver_artifacts", "webdriver_flag"),
@@ -39,6 +42,8 @@ BOOL_SIGNALS = [
     ("webdriver_artifacts", "headless_ua"),
     ("arcade_metrics", "dom_only_target_hit"),
     ("arcade_metrics", "all_clicks_trusted"),
+    ("arcade_metrics", "has_pointerrawupdate"),
+    ("arcade_metrics", "no_pointer_or_click_telemetry"),
 ]
 # String-valued signals — kept separate from NUMERIC_SIGNALS since they can't go
 # through pd.to_numeric or a mean() aggregation; shown as value-count breakdowns.
@@ -66,11 +71,16 @@ SIGNAL_LABELS = {
     "arcade_metrics.stale_frame_offset_ms": "Stale-frame offset (ms)",
     "arcade_metrics.ipi_cv": "Keystroke interval (CV)",
     "arcade_metrics.backspace_rate": "Backspace rate",
+    "arcade_metrics.coalesced_event_ratio": "Coalesced pointer-event ratio",
+    "arcade_metrics.coalesced_extra_samples_per_batch": "Extra samples per coalesced batch",
+    "arcade_metrics.stale_element_interaction_rate": "Stale-element click rate",
     "webdriver_artifacts.webdriver_flag": "navigator.webdriver flag",
     "webdriver_artifacts.suspicious_webgl_renderer": "Software-rendered WebGL",
     "webdriver_artifacts.headless_ua": "Headless user-agent",
     "arcade_metrics.dom_only_target_hit": "Fell for DOM-order trap",
     "arcade_metrics.all_clicks_trusted": "All clicks isTrusted",
+    "arcade_metrics.has_pointerrawupdate": "Supports pointerrawupdate",
+    "arcade_metrics.no_pointer_or_click_telemetry": "Zero pointer/click telemetry despite progress",
 }
 
 

@@ -75,8 +75,32 @@ def _pointer_density_and_coalesced_ratio(events: list[dict], duration_s: float |
     if not samples:
         return None, None
     density = (len(samples) / duration_s) if duration_s else None
+    # "coalesced" (set client-side) now means getCoalescedEvents() returned
+    # >1 entries — a genuine multi-sample merge, not the old always-true ">0"
+    # check. See arcade.js's samplePointer()/pointerHandler().
     coalesced = sum(1 for e in samples if e["payload"].get("coalesced"))
     return density, coalesced / len(samples)
+
+
+def _extra_samples_per_batch(events: list[dict]) -> float | None:
+    """Mean real extra samples gained per raw pointer event, from genuine
+    coalescing batches only. Dedups by batch_seq first — every sample in a
+    batch carries the same batch_size, so summing (batch_size-1) per SAMPLE
+    would overcount a single 3-sample batch as 6 extra instead of 2. Distinct
+    from coalesced_event_ratio (fraction of samples that came from a >1 batch)
+    — this instead answers "when coalescing happens, how much extra
+    resolution does it actually add."
+    """
+    samples = [e for e in events if e["type"] == "pointer_sample"]
+    batches: dict = {}
+    for e in samples:
+        seq = e["payload"].get("batch_seq")
+        size = e["payload"].get("batch_size", 1)
+        if seq is not None and seq not in batches:
+            batches[seq] = size
+    if not batches:
+        return None
+    return sum(max(0, size - 1) for size in batches.values()) / len(batches)
 
 
 def _click_offset_scatter(events: list[dict]) -> float | None:
@@ -191,41 +215,80 @@ def _latency_complexity_slope(events: list[dict]) -> float | None:
     return _linear_regression_slope(points)
 
 
+MIN_SHIFT_DISPLACEMENT_PX = 30  # below this, pre/post are too close to tell which one a click was aimed at
+
+
 def _stale_frame_offset_ms(events: list[dict]) -> float | None:
     """How far behind "now" this player's click was, in milliseconds, from B1's
-    layout-shift stage. offset_px is the miss distance between where the click
-    landed and where the target actually was after it shifted (a clean hit would
-    be ~0px); converted to ms using THIS player's own locally-measured cursor
-    speed in the run-up to the click (from ambient pointer_sample), not a
-    guessed constant — see b1_layout_shift.js's docstring.
+    layout-shift stage. Keeps a timestamped position history for the target
+    (spawn position + shift position) and finds which historical position the
+    click geometrically matches best, then reports the real elapsed time since
+    that position was current — read directly off recorded timestamps.
+
+    Deliberately does NOT infer time from distance÷velocity anymore: that
+    produced multi-second garbage whenever the divisor (cursor approach speed,
+    measured from ambient pointer_sample) was merely small rather than exactly
+    zero — e.g. a 20px spatial error over a ~10px/s approach silently inflated
+    to ~2000ms, passing the old "not exactly zero" guard while still being
+    nonsense. b1_layout_shift.js also used to stamp spawn/shift timestamps with
+    bare performance.now(), not comparable to any other event's client_ts
+    (which include performance.timeOrigin) — fixed there too; extra.spawn_ts/
+    shift_ts/click_ts here are only trustworthy from sessions captured after
+    that fix (older extras won't have them and return None, not garbage).
+
+    Rounds where the shift displacement itself is under
+    MIN_SHIFT_DISPLACEMENT_PX are rejected outright — if pre/post nearly
+    coincide, no geometric match can meaningfully say which one a click was
+    "aimed at" regardless of timestamps.
     """
     result = _stage_result(events, "b1_layout_shift")
     if result is None:
         return None
     extra = result.get("extra", {})
-    if not extra.get("shifted") or extra.get("click_x") is None:
+    if not extra.get("shifted") or extra.get("click_x") is None or extra.get("click_ts") is None:
         return None
 
-    offset_px = ((extra["click_x"] - extra["post_shift_x"]) ** 2 + (extra["click_y"] - extra["post_shift_y"]) ** 2) ** 0.5
+    pre = (extra.get("pre_shift_x"), extra.get("pre_shift_y"), extra.get("spawn_ts"))
+    post = (extra.get("post_shift_x"), extra.get("post_shift_y"), extra.get("shift_ts"))
+    if pre[2] is None or post[2] is None:
+        return None  # pre-fix session (bare performance.now(), not cross-referenceable) or malformed
 
-    click_ts = next((e["client_ts"] for e in events if e["type"] == "stage_result" and e["payload"].get("stage_id") == "b1_layout_shift"), None)
-    if click_ts is None:
+    shift_displacement = ((post[0] - pre[0]) ** 2 + (post[1] - pre[1]) ** 2) ** 0.5
+    if shift_displacement < MIN_SHIFT_DISPLACEMENT_PX:
         return None
-    window = [
-        e for e in events
-        if e["type"] == "pointer_sample" and e["payload"].get("stage_id") == "b1_layout_shift"
-        and click_ts - CORRECTION_WINDOW_MS <= e["client_ts"] <= click_ts
-    ]
-    points = [(e["payload"]["x"], e["payload"]["y"], e["client_ts"]) for e in window if "x" in e["payload"]]
-    if len(points) < 2:
+
+    click_x, click_y, click_ts = extra["click_x"], extra["click_y"], extra["click_ts"]
+    best_ts, best_dist = None, None
+    for x, y, ts in (pre, post):
+        d = ((click_x - x) ** 2 + (click_y - y) ** 2) ** 0.5
+        if best_dist is None or d < best_dist:
+            best_dist, best_ts = d, ts
+
+    return click_ts - best_ts
+
+
+def _telemetry_free_progress(events: list[dict]) -> bool | None:
+    """True when the session produced at least one stage_result (proof some
+    interaction genuinely advanced the game) but generated zero pointer_sample
+    AND zero click_detail events across the entire run. A human, or any
+    automation stack driving input through real OS/CDP-level events
+    (Input.dispatchMouseEvent, an actual pointer/click), always leaves a
+    pointer or click trail — it's structurally impossible not to, since those
+    are ambient captures wired to the DOM's own event bubbling, not something
+    a caller opts into per-action. Only an automation path that advances the
+    game through something other than a dispatched pointer/click event (found
+    via the agent_llm_cdp batch: Browser Use's "could not get element
+    geometry from any method, falling back to JavaScript click" path)
+    produces stage_results with zero trace in either ambient stream — 6/6
+    sessions in that batch, 0/16 raw_cdp, 0/5 stealth_cdp. Returns None (not
+    False) when there's no stage_result at all, since "no progress, no
+    telemetry" isn't evidence of anything.
+    """
+    if not any(e["type"] == "stage_result" for e in events):
         return None
-    points.sort(key=lambda p: p[2])
-    total_dist = sum(((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5 for a, b in zip(points, points[1:]))
-    total_time_ms = points[-1][2] - points[0][2]
-    if total_time_ms <= 0 or total_dist == 0:
-        return None
-    speed_px_per_ms = total_dist / total_time_ms
-    return offset_px / speed_px_per_ms
+    has_pointer = any(e["type"] == "pointer_sample" for e in events)
+    has_click = any(e["type"] == "click_detail" for e in events)
+    return not has_pointer and not has_click
 
 
 def _frame_jank_ratio(events: list[dict]) -> float | None:
@@ -255,9 +318,24 @@ def extract(session_id: str, conn: sqlite3.Connection) -> dict:
     is_trusted_values = [e["payload"].get("is_trusted") for e in events if e["type"] == "click_detail"]
     all_clicks_trusted = all(is_trusted_values) if is_trusted_values else None
 
+    capabilities = next((e["payload"] for e in events if e["type"] == "arcade_capabilities"), None)
+    has_pointerrawupdate = capabilities.get("has_pointerrawupdate") if capabilities else None
+
+    # True means a click's own per-element handler ran with el.isConnected
+    # already false — the element it targeted had already been removed from
+    # the DOM. A live human/CDP click can never land on something that isn't
+    # currently on screen; only a stale cached reference can. See
+    # arcade.js/c4_whack_a_mole.js's click handlers and CLAUDE.md's writeup —
+    # this was found via the Browser Use session that clicked an already-gone
+    # mole 10.8s after its round ended.
+    stale_flags = [e["payload"].get("stale_element_interaction") for e in events if e["type"] == "click_detail"]
+    stale_flags = [f for f in stale_flags if f is not None]
+    stale_element_interaction_rate = (sum(1 for f in stale_flags if f) / len(stale_flags)) if stale_flags else None
+
     return {
         "ran_arcade": complete is not None,
         "reduced_motion": reduced_motion,
+        "has_pointerrawupdate": has_pointerrawupdate,
         "frame_jank_ratio": _frame_jank_ratio(events),
         # Perception / decision-structure probes (A1, A2)
         "perception_mode": perception_mode,
@@ -269,6 +347,7 @@ def extract(session_id: str, conn: sqlite3.Connection) -> dict:
         # Ambient pointer geometry
         "pointer_sample_density": pointer_density,
         "coalesced_event_ratio": coalesced_ratio,
+        "coalesced_extra_samples_per_batch": _extra_samples_per_batch(events),
         "click_offset_scatter": _click_offset_scatter(events),
         "correction_count": correction_count,
         "overshoot_rate": overshoot_rate,
@@ -276,6 +355,8 @@ def extract(session_id: str, conn: sqlite3.Connection) -> dict:
         # Cheap, known-blind-spot signal — see module docstring. Not weighted as if
         # it catches CDP-driven agents; it only catches JS-injected clicks.
         "all_clicks_trusted": all_clicks_trusted,
+        "stale_element_interaction_rate": stale_element_interaction_rate,
+        "no_pointer_or_click_telemetry": _telemetry_free_progress(events),
         # Not computable without stages that don't exist yet (A4, A5, A6, B1) —
         # explicit None, not faked. Wire these up when those stages land.
         "ipi_cv": ipi_cv,

@@ -98,7 +98,10 @@
 
         inputEl.addEventListener("keydown", onKeydown);
         inputEl.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") finish(inputEl.value, false);
+          if (e.key === "Enter") {
+            inputEl.classList.add("arcade-input-flash");
+            finish(inputEl.value, false);
+          }
         });
         inputEl.focus();
         const timeoutId = setTimeout(() => finish(inputEl.value, true), PART1_TIMEOUT_MS);
@@ -154,6 +157,9 @@
           if (remaining.has(typed)) {
             remaining.delete(typed);
             wordEls[typed].classList.add("found");
+            inputEl.classList.remove("arcade-input-flash");
+            void inputEl.offsetWidth; // restart the animation if it's still mid-flash from the previous word
+            inputEl.classList.add("arcade-input-flash");
             if (remaining.size === 0) finish(false);
           }
         });

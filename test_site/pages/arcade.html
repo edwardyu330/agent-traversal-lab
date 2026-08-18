@@ -117,6 +117,26 @@
       to { transform: scale(1); opacity: 1; }
     }
 
+    .arcade-click-pop {
+      position: fixed; width: 36px; height: 36px; border-radius: 50%;
+      transform: translate(-50%, -50%); pointer-events: none; z-index: 80;
+      border: 3px solid #6fcf97; animation: arcadeClickPop 380ms ease-out forwards;
+    }
+    .arcade-click-pop.miss { border-color: #e07a5f; }
+    @keyframes arcadeClickPop {
+      0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0.9; }
+      100% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; }
+    }
+    .arcade-type-input.arcade-input-flash { animation: arcadeInputFlash 380ms ease; }
+    @keyframes arcadeInputFlash {
+      0% { box-shadow: 0 0 0 0 rgba(111, 207, 151, 0.7); }
+      60% { box-shadow: 0 0 0 6px rgba(111, 207, 151, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(111, 207, 151, 0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .arcade-click-pop, .arcade-input-flash { animation: none !important; display: none; }
+    }
+
     .privacy-note { font-size: 12px; color: #888; padding: 8px 24px; border-bottom: 1px solid #1a1d1a; }
 
     .arcade-landing { max-width: 480px; text-align: center; }
@@ -150,6 +170,8 @@
     .stat .label { font-size: 12px; color: #999; margin-top: 2px; }
     .verdict-text { font-size: 17px; font-weight: 600; margin: 20px 0 16px; }
     #reveal-form { margin-top: 12px; }
+    .claim-help { font-size: 12px; color: #999; line-height: 1.6; max-width: 480px; margin: 0 0 12px; }
+    .claim-help strong { color: #ccc; }
     #reveal-form label { display: inline-block; margin: 0 12px 12px 0; font-size: 14px; }
     #reveal-form input[type=text] {
       width: 100%; max-width: 320px; padding: 9px 10px; border-radius: 6px; border: 1px solid #333;
@@ -189,6 +211,9 @@
         <li>~7 short stages, most under 10 seconds each</li>
         <li>No sign-up required to play</li>
         <li>Score goes on the leaderboard for your category</li>
+        <li><strong>Human</strong> — a person playing normally</li>
+        <li><strong>Bot / script</strong> — code on a fixed script, no on-screen reasoning</li>
+        <li><strong>AI agent</strong> — an LLM deciding each move by looking at the page</li>
       </ul>
       <p><button id="start-arcade" class="start-btn">Start the Gauntlet →</button></p>
     </div>
@@ -267,6 +292,15 @@
               <label for="player-email">Email (optional, not shown publicly)</label>
               <input type="email" id="player-email" placeholder="you@example.com" />
               <p style="margin:16px 0 8px;">What were you really?</p>
+              <p class="claim-help">
+                <strong>Human</strong> — a person, playing normally.
+                <strong>Bot / script</strong> — code that clicked/typed on a fixed script, no reasoning
+                about what was on screen (e.g. Selenium/Playwright driving pre-set coordinates).
+                <strong>AI agent</strong> — an LLM deciding what to click/type step by step by looking at
+                the page (e.g. Browser Use, a computer-use agent). If you're not sure which of the last
+                two applies, pick whichever is closer — the free-text tool field below is more useful
+                than getting this exactly right.
+              </p>
               <label><input type="radio" name="claimed_type" value="human" checked /> Human</label>
               <label><input type="radio" name="claimed_type" value="bot_script" /> Bot / script</label>
               <label><input type="radio" name="claimed_type" value="agent" /> AI agent</label>

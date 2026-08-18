@@ -53,6 +53,17 @@
         let clicked = false;
 
         function onMoleClick() {
+          // Checked first, before anything else touches the DOM: if this
+          // mole is already disconnected, the click landed on a stale cached
+          // reference from a round that already ended (this is exactly what
+          // the Browser Use validation run did — clicked a mole 10.8s after
+          // its round had timed out). A live human/CDP click can never fire
+          // on an element that isn't currently on screen, so this is a clean,
+          // direct signal rather than something to filter out as bad data.
+          const stale = !mole.isConnected;
+          ctx.setClickTargetRect(stale ? null : mole.getBoundingClientRect(), stale);
+          if (stale) return; // this round already resolved via timeout — don't double-record it
+
           if (clicked) return;
           clicked = true;
           clearTimeout(timeoutId);

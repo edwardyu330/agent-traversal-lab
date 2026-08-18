@@ -11,6 +11,7 @@
   const WASH_MS = 260;
   const DECOY_COUNT_RANGE = [2, 4];
   const REACTION_TIMEOUT_MS = 3000;
+  const MAX_FALSE_STARTS = 4; // safety valve — a session that can never judge "settled" correctly still has to end eventually
 
   function pick(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
@@ -22,14 +23,19 @@
     title: "Flash Reaction",
 
     mount(container, ctx) {
-      const target = pick(PALETTE);
-      const decoyCount = DECOY_COUNT_RANGE[0] + Math.floor(Math.random() * (DECOY_COUNT_RANGE[1] - DECOY_COUNT_RANGE[0] + 1));
-      const decoys = [];
-      for (let i = 0; i < decoyCount; i++) {
-        let c;
-        do { c = pick(PALETTE); } while (c.name === target.name);
-        decoys.push(c);
+      let target, decoys;
+
+      function rollRound() {
+        target = pick(PALETTE);
+        const decoyCount = DECOY_COUNT_RANGE[0] + Math.floor(Math.random() * (DECOY_COUNT_RANGE[1] - DECOY_COUNT_RANGE[0] + 1));
+        decoys = [];
+        for (let i = 0; i < decoyCount; i++) {
+          let c;
+          do { c = pick(PALETTE); } while (c.name === target.name);
+          decoys.push(c);
+        }
       }
+      rollRound();
 
       const wrap = document.createElement("div");
       wrap.className = "arcade-stage arcade-stage-c1 fade-in";
@@ -38,6 +44,7 @@
         <canvas class="arcade-canvas"></canvas>
       `;
       container.appendChild(wrap);
+      const instruction = wrap.querySelector(".arcade-instruction");
       const canvas = wrap.querySelector("canvas");
       const dpr = window.devicePixelRatio || 1;
       const resize = () => {
@@ -50,6 +57,7 @@
       let settled = false;
       let settleTs = null;
       let done = false;
+      let falseStarts = 0;
       const startTs = performance.now();
 
       function drawWash(css, progress) {
@@ -115,9 +123,34 @@
         });
       }
 
+      // A click before the wash settles doesn't end the stage — it resets the
+      // round with a fresh target/decoys, same posture as C4 not letting a
+      // trap click skip the remaining rounds. Bounded by MAX_FALSE_STARTS so a
+      // session that can never judge "settled" correctly still terminates.
+      function resetRound() {
+        settled = false;
+        settleTs = null;
+        rollRound();
+        instruction.innerHTML = `Click when the wash settles on <strong>${target.name}</strong>`;
+        washSequence(decoys, 0, settleOnTarget);
+      }
+
       function onClick() {
+        ctx.setClickTargetRect(canvas.isConnected ? canvas.getBoundingClientRect() : null, !canvas.isConnected);
         if (!settled) {
-          finish(false, null); // false start
+          falseStarts += 1;
+          ctx.track("stage_result", {
+            stage_id: "c1_flash_reaction",
+            stage_tier: "C",
+            duration_ms: performance.now() - startTs,
+            correct: false,
+            extra: { reaction_ms: null, target: target.name, false_start: true, attempt: falseStarts },
+          });
+          if (falseStarts >= MAX_FALSE_STARTS) {
+            finish(false, null);
+            return;
+          }
+          resetRound();
           return;
         }
         finish(true, performance.now() - settleTs);

@@ -52,7 +52,10 @@
         for (let i = 0; i < count; i++) {
           const cell = document.createElement("div");
           cell.className = "arcade-ramp-cell" + (i === targetPos ? " target" : "");
-          cell.addEventListener("click", () => onCellClick(i === targetPos, count, levelStartTs));
+          cell.addEventListener("click", () => {
+            ctx.setClickTargetRect(cell.isConnected ? cell.getBoundingClientRect() : null, !cell.isConnected);
+            onCellClick(i === targetPos, count, levelStartTs);
+          });
           grid.appendChild(cell);
         }
 
