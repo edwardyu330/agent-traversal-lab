@@ -20,72 +20,64 @@ correlation, real IP/proxy-network intelligence (stubbed with a TODO), hardware 
 
 ## Layout
 
-- `test_site/` — FastAPI app serving instrumented local pages (product listing, login,
-  checkout, `/play` — the storefront challenge, `/arcade` — the mini-game gauntlet, now
-  the *primary* data-collection surface, see below, and `/metrics` — a live dashboard,
-  not linked from any public page, reusing `analysis.compare_agent_vs_human.build_dataframe()`
-  rather than duplicating its aggregation logic) plus two independent client-side
-  telemetry paths: `collector.js` (storefront/`/play`, throttled mousemove) and
-  `arcade.js` (`/arcade`, unthrottled — see "The `/arcade` gauntlet" for why they're not
-  shared). Sessions and raw events land in `data/traversal.db` (SQLite, gitignored),
-  regardless of which path wrote them.
+- `test_site/` — FastAPI app serving `/arcade` (the mini-game gauntlet — the *only*
+  player-facing surface; `/` just redirects there) and `/metrics` — a live dashboard, not
+  linked from any public page, reusing `analysis.compare_agent_vs_human.build_dataframe()`
+  rather than duplicating its aggregation logic. `arcade.js` is the only client-side
+  telemetry path (unthrottled — see "The `/arcade` gauntlet"). Sessions and raw events
+  land in `data/traversal.db` (SQLite, gitignored). The original build also had a
+  storefront (product listing/login/checkout) and a `/play` challenge flow reusing it,
+  plus a throttled `collector.js` telemetry path and a `run_human_baseline.py` driver —
+  all deleted once `/arcade` fully superseded them as the data-collection surface;
+  historical sessions captured through that flow are still in `data/traversal.db` and
+  still show up in `signals/`/`scoring/`/`analysis/` (`classify_surface()` in
+  `analysis/audit_dataset.py` still calls that shape "storefront" for exactly this reason)
+  — only the code that served it is gone, not the data.
 - `agent_runner/` — scripts that drive traffic against `test_site` and label sessions at
-  generation time: raw Playwright/CDP, Browser Use (LLM-driven, still CDP underneath),
-  and a human-baseline capture helper. Superseded as the primary human-data path first by
-  `/play`, now by `/arcade`, but still valid for controlled solo runs.
+  generation time: raw Playwright/CDP (`run_playwright_raw.py`), Browser Use (LLM-driven,
+  still CDP underneath — `run_browser_use.py`), and an evasive raw-CDP profile
+  (`run_playwright_stealth.py` — patched `navigator.webdriver`, headed, curved mouse
+  paths, testing whether detection holds up against an adversary actively trying to look
+  human). Human baseline data now comes from real people playing `/arcade` directly (no
+  driver script needed) plus honest self-report on reveal.
 - `signals/` — signal-extraction modules reading from `data/traversal.db`: WebDriver/CDP
   artifacts, inter-action timing (`event_gaps()` is a raw diagnostic, not used by the
-  scorer — see `analysis/inspect_timing.py`), mouse geometry (storefront-scale, still
-  used, no longer the main composite's backbone), network fingerprint (noted
-  limitations), and `arcade_metrics.py` — the metric set `/arcade`'s games actually drive
-  the score with now. A few fields (`path_optimality`, `backtrack_count`, `dead_end_rate`)
-  are still `None` pending A6, the one stage not built yet — check there before assuming
-  a metric is wired up just because it's defined.
+  scorer — see `analysis/inspect_timing.py`), mouse geometry (no longer the main
+  composite's backbone), network fingerprint (noted limitations), and `arcade_metrics.py`
+  — the metric set `/arcade`'s games actually drive the score with now. A few fields
+  (`path_optimality`, `backtrack_count`, `dead_end_rate`) are still `None` pending A6, the
+  one stage not built yet — check there before assuming a metric is wired up just because
+  it's defined.
 - `scoring/` — `rule_based_scorer.py` combines signals into `score` (arcade + mouse-
   curvature composite) and a separately-tracked `raw_automation_score` (webdriver flag /
   headless UA / suspicious WebGL — 100% accurate against raw CDP, reads 0 against a real
   browser under agent control, so it's deliberately *not* summed into `score` — see the
   module docstring for the Browser Use session that motivated this split).
   `overall_detection_score` (max of the two tracks) is what `coarse_verdict()` — the only
-  thing `/play` and `/arcade` are allowed to show — actually scores against; never
+  thing `/arcade` is allowed to show — actually scores against; never
   score/band/breakdown/raw_automation_breakdown, so the reveal screen can't double as an
-  evasion-tuning guide for the audience it's built to catch.
-- `analysis/` — `compare_agent_vs_human.py` (report) and `inspect_timing.py` (gap
-  histogram diagnostic, used to check timing-window assumptions against real data before
-  changing them).
+  evasion-tuning guide for the audience it's built to catch. Point values for every rule
+  live in `scoring/weights_store.py`'s `data/scorer_weights.json`, not as literals in
+  `rule_based_scorer.py` — loaded fresh on every score, and nudged automatically by
+  `update_weights_from_reveal()` on every `/api/reveal` where the verdict shown didn't
+  match the player's own claim (see that function's docstring for the honor-system
+  exposure that comes with that being fully automatic, by explicit product decision).
+- `analysis/` — `compare_agent_vs_human.py` (report), `inspect_timing.py` (gap histogram
+  diagnostic, used to check timing-window assumptions against real data before changing
+  them), and `audit_dataset.py` (read-only dataset/telemetry-quality audit, scoped to the
+  current `build_version` by default).
 
-## The `/play` challenge flow
-
-Public-facing (private beta) alternative to `run_human_baseline.py`'s manual CLI loop.
-`GET /play` is a static landing page (no collector.js — telemetry shouldn't start before
-the challenge does) explaining the challenge and linking to `/?label=pending`, which
-drops the visitor into the *same* shop → login → checkout flow every other session type
-uses, unmodified. `label=pending` is a sentinel meaning "awaiting reveal," not a real
-class — `VALID_LABELS` and `collector.js`'s copy of it both know about it.
-
-Once checkout shows "Order confirmed," checkout.html's JS flushes any queued telemetry
-(`window.ATL.flushNow()`) *before* fetching `GET /api/verdict/{session_id}`, which runs
-the real scorer server-side but returns only `coarse_verdict()`'s two fields. The visitor
-then self-reports what they actually were via `POST /api/reveal` (`claimed_type`: human /
-bot_script / agent, from `CLAIMED_TYPES` — a separate, smaller vocabulary from
-`VALID_LABELS`; optional free-text `tool`). This is honor-system by explicit product
-decision, not a placeholder: reveal never rejects, gates, or cross-checks a claim against
-telemetry — it's taken at face value and lands as `trust='verified'` immediately, same as
-a generator-created session. There is no "unverified" consistency-check machinery to build
-here; `trust` exists as a column mainly so a future adversarial-verification mode could be
-turned on without another migration, not because this build computes it.
-
-`/api/reveal` also *creates* the session if `session_id` doesn't already exist (an
-`upsert_session` with `ON CONFLICT DO NOTHING`, safe no-op for real `/play` sessions) —
-this is how a pure-HTTP client with no JS execution self-reports: it never ran
-collector.js, so it never got a session_id from us, but it can make one up and POST
-straight to `/api/reveal` with `claimed_type` + `tool`. That session then has zero
-telemetry (no mousemoves, no webdriver flag, nothing) — which is expected, not a bug: the
-value is capturing that this category of visitor showed up at all, not scoring them.
-
-No separate datastore: `/play` writes through the exact same `test_site/storage.py` /
-`data/traversal.db` every generator script uses, so anything revealed is immediately
-visible to `signals/`, `scoring/`, and `analysis/` — no export/import step, ever.
+Honor-system self-report, still true after the storefront removal: `/api/reveal`
+(`claimed_type`: human/bot_script/agent, from `CLAIMED_TYPES`; optional free-text `tool`)
+never rejects, gates, or cross-checks a claim against telemetry — it's taken at face value
+and lands as `trust='verified'` immediately, same as a generator-created session. There is
+no "unverified" consistency-check machinery to build; `trust` exists as a column mainly so
+a future adversarial-verification mode could be turned on without another migration, not
+because this build computes it. `/api/reveal` also *creates* the session if `session_id`
+doesn't already exist — how a pure-HTTP client with no JS execution self-reports: it never
+ran `arcade.js`, so it never got a session_id from us, but it can make one up and POST
+straight to `/api/reveal`. That session then has zero telemetry, which is expected, not a
+bug: the value is capturing that this category of visitor showed up at all.
 
 ## The `/arcade` gauntlet
 
@@ -197,7 +189,7 @@ This is arguably a feature, not just a testing footgun: it means high-level
 element-based-click automation frameworks (Selenium/Playwright's own `.click()`) can't
 trivially drive this stage the same way a human or a raw-coordinate CDP call can.
 
-**Reveal + leaderboard**: same verdict contract as `/play` — `GET /api/verdict/{id}`
+**Reveal + leaderboard**: `GET /api/verdict/{id}`
 (coarse verdict only) then `POST /api/reveal` (`claimed_type`/`tool`, plus optional
 `player_score`, `name`, `email`). `name` is free text rendered back to every future
 visitor via the leaderboard — `arcade.html` escapes it through `textContent`/`innerHTML`
@@ -215,7 +207,7 @@ without playing, linked from `/arcade`'s header — for people who just want to 
 standings. Hits the same `/api/leaderboard` endpoint the reveal screen uses; no separate
 backend logic to keep in sync.
 
-Not built from the original `/arcade` spec: A3/A6/B2, and rate limiting.
+Not built from the original `/arcade` spec: A3/A6/B2.
 
 ## Google Sheets sync
 
@@ -251,9 +243,9 @@ writes a header row if the sheet is empty.
 - Python 3.11+, FastAPI + uvicorn for the test server, Playwright for automation, SQLite
   for storage (no ORM — plain `sqlite3`).
 - Session labels are assigned at traffic-generation time via a `?label=` query param on
-  the first page hit for generator scripts (`human`, `agent_raw_cdp`, `agent_llm_cdp`),
-  persisted client-side in `sessionStorage` so it survives navigation across the task
-  flow. For `/play` sessions, the real label isn't known until reveal time — see above.
+  `/arcade` for generator scripts (`agent_raw_cdp`, `agent_llm_cdp`, `agent_stealth_cdp`
+  — see `GENERATOR_LABELS` in `arcade.js`). A real player gets no query param and stays
+  `pending` until they self-report at reveal — see above.
 - Keep signal modules pure functions: `(session_id, conn) -> dict of signal values`. The
   scorer composes them; don't let scoring logic leak into signal extraction.
 - When a phase's real implementation is out of scope for now, write a stub with a `# TODO`

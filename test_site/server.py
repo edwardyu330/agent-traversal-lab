@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -55,9 +55,9 @@ async def rate_limit(request: Request, call_next):
 
 VALID_LABELS = {"human", "agent_raw_cdp", "agent_llm_cdp", "agent_stealth_cdp", "pending", "unknown"}
 
-# Self-reported categories on the /play reveal screen — a separate, smaller vocabulary
-# from VALID_LABELS (which also covers our own controlled generators). A reveal
-# overwrites a "pending" session's label with one of these.
+# Self-reported categories on the /arcade reveal screen — a separate, smaller
+# vocabulary from VALID_LABELS (which also covers our own controlled
+# generators). A reveal overwrites a "pending" session's label with one of these.
 CLAIMED_TYPES = {"human", "bot_script", "agent"}
 
 
@@ -71,23 +71,9 @@ def on_startup() -> None:
 
 
 @app.get("/")
-def index(request: Request):
-    return templates.TemplateResponse(request, "index.html", {})
-
-
-@app.get("/login")
-def login(request: Request):
-    return templates.TemplateResponse(request, "login.html", {})
-
-
-@app.get("/checkout")
-def checkout(request: Request):
-    return templates.TemplateResponse(request, "checkout.html", {})
-
-
-@app.get("/play")
-def play(request: Request):
-    return templates.TemplateResponse(request, "play.html", {})
+def index():
+    # No storefront anymore — /arcade is the only player-facing surface.
+    return RedirectResponse("/arcade")
 
 
 @app.get("/arcade")
@@ -323,9 +309,9 @@ def session_start(body: SessionStart, request: Request):
     received = now_iso()
 
     # A non-"pending" label here came from one of our own generator scripts setting
-    # ?label= directly (run_playwright_raw.py, run_browser_use.py, run_human_baseline.py)
-    # — we control those, so trust it immediately. "pending" means this is a /play
-    # session; its real label (and any trust) isn't known until reveal time.
+    # ?label= directly (run_playwright_raw.py, run_browser_use.py, run_playwright_stealth.py)
+    # — we control those, so trust it immediately. "pending" means this is a real
+    # player on /arcade; their real label (and any trust) isn't known until reveal time.
     trust = "verified" if label != "pending" else None
 
     # Practical, server-observable substitute for TLS/JA4 fingerprinting (which needs
@@ -422,11 +408,11 @@ def reveal(body: RevealBody, request: Request):
 
     now = now_iso()
     with get_conn() as conn:
-        # Covers pure-HTTP self-reports too: a script that never executed collector.js
+        # Covers pure-HTTP self-reports too: a script that never executed arcade.js
         # has no prior session row (no JS ran, so no session_id was ever registered
         # server-side) — it can make up any session_id and POST straight here. The
         # upsert is a no-op (ON CONFLICT DO NOTHING) for sessions that already exist
-        # from the normal /play flow, so it never clobbers real telemetry-linked rows.
+        # from the normal /arcade flow, so it never clobbers real telemetry-linked rows.
         upsert_session(conn, body.session_id, "pending", None,
                         request.headers.get("user-agent"), None, now)
         # Honor-system product: the claim is trusted outright, no consistency check
