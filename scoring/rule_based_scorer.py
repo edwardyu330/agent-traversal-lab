@@ -112,12 +112,15 @@ def _score_arcade(arcade: dict, weights: dict, human_ranges: dict) -> list[dict]
         add("dom_order_over_visual_order",
             "clicked the box matching source-order position, not visual position")
 
-    cv = arcade["cadence_cv"]
-    if cv is not None:
-        if cv < 0.15:
-            add("uniform_cadence", f"inter-action timing coefficient of variation {cv:.2f} (near-constant)")
-        elif cv < 0.3:
-            add("fairly_uniform_cadence", f"inter-action timing coefficient of variation {cv:.2f}")
+    # uniform_cadence/fairly_uniform_cadence (low CV = bot) removed —
+    # analysis/separation_analysis.py's separation analysis found cadence_cv's
+    # direction reverses between our own two labeled bot classes: agent_raw_cdp
+    # runs HIGHER (less uniform) than human, agent_llm_cdp runs lower, and
+    # neither pair's AUC clears its bootstrap CI. A rule that scores backwards
+    # for a real fraction of automation traffic is worse than no rule; "direction-
+    # aware per label" isn't something score_session() can do live since the
+    # label is exactly what it's trying to determine. Metric still extracted
+    # and visible on /metrics, just not scored.
 
     corrections = arcade["correction_count"]
     if corrections is not None and corrections < 0.5:

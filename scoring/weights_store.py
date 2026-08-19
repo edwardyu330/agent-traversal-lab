@@ -37,8 +37,8 @@ DEFAULT_WEIGHTS = {
     # score track — arcade_metrics.py
     "dom_only_perception": 35,
     "dom_order_over_visual_order": 20,
-    "uniform_cadence": 20,
-    "fairly_uniform_cadence": 8,
+    # uniform_cadence/fairly_uniform_cadence removed — see rule_based_scorer.py's
+    # _score_arcade for why (direction reverses between our two bot labels).
     "no_path_corrections": 10,
     "no_overshoot": 5,
     "dead_center_clicks": 10,

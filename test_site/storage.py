@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_agent      TEXT,
     first_page      TEXT,
     started_at      TEXT NOT NULL,
-    revealed_at     TEXT
+    revealed_at     TEXT,
+    client_ip       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -57,6 +58,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT")
     if "build_version" not in cols:
         conn.execute("ALTER TABLE sessions ADD COLUMN build_version TEXT")
+    if "client_ip" not in cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN client_ip TEXT")
 
     # Idempotent backfill: any session with no trust value that isn't sitting in
     # "pending" (unrevealed) state was created by a controlled generator script
@@ -72,14 +75,14 @@ def init_db() -> None:
 
 def upsert_session(conn: sqlite3.Connection, session_id: str, label: str, trust: str | None,
                     user_agent: str, first_page: str, started_at: str,
-                    build_version: str | None = None) -> None:
+                    build_version: str | None = None, client_ip: str | None = None) -> None:
     conn.execute(
         """
-        INSERT INTO sessions (session_id, label, trust, user_agent, first_page, started_at, build_version)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sessions (session_id, label, trust, user_agent, first_page, started_at, build_version, client_ip)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (session_id) DO NOTHING
         """,
-        (session_id, label, trust, user_agent, first_page, started_at, build_version),
+        (session_id, label, trust, user_agent, first_page, started_at, build_version, client_ip),
     )
 
 

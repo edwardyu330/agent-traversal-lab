@@ -36,6 +36,17 @@ METRICS = [
     "backspace_rate",
 ]
 
+# Nullity-as-feature re-run, per user request: absence of pointer/typing data
+# is inherent to a programmatic click/fill, not missing data to drop. These
+# are booleans/fractions (0/1-valued), not continuous — auc()/bootstrap_auc_ci()
+# both work unchanged on them since Python bool compares as int.
+NULLITY_METRICS = [
+    "has_pointer_samples",
+    "has_typing_data",
+    "has_movement_before_click",
+    "no_pointer_or_click_telemetry",
+]
+
 
 def session_groups(conn):
     human, raw_cdp, llm_cdp, wild = [], [], [], []
@@ -103,7 +114,7 @@ def summ(vals):
     return f"n={len(vals)} median={statistics.median(vals):.4g} range=[{min(vals):.4g}, {max(vals):.4g}]"
 
 
-def build_composite_loocv(rows_by_id, human_ids, llm_ids, metric_directions):
+def build_composite_loocv(rows_by_id, human_ids, other_ids, metric_directions, other_label="other"):
     """metric_directions: {metric: +1 or -1}, +1 meaning "higher = more
     automation-like" for that metric, -1 meaning lower does. Composite is an
     unweighted mean of per-metric z-scores (oriented so higher composite =
@@ -113,8 +124,11 @@ def build_composite_loocv(rows_by_id, human_ids, llm_ids, metric_directions):
 
     Returns per-session (session_id, true_label, loocv_score) tuples, only
     for sessions with at least one of the composite metrics populated.
+    `other_label` is just what true_label reads for the non-human group in
+    the output — lets this same function score any agent population against
+    human, not just agent_llm_cdp (see analysis/adversarial_rescore.py).
     """
-    pool = [(sid, "human") for sid in human_ids] + [(sid, "llm_cdp") for sid in llm_ids]
+    pool = [(sid, "human") for sid in human_ids] + [(sid, other_label) for sid in other_ids]
     metrics = list(metric_directions.keys())
     out = []
     for held_out_sid, true_label in pool:
@@ -138,18 +152,80 @@ def build_composite_loocv(rows_by_id, human_ids, llm_ids, metric_directions):
     return out
 
 
-def roc_points(scored):
-    """scored: list of (label, score) with label in {'human','llm_cdp'}.
+def roc_points(scored, other_label="other"):
+    """scored: list of (label, score) with label in {'human', other_label}.
     Returns sorted unique thresholds with confusion-matrix counts at each."""
     thresholds = sorted({s for _, s in scored})
     points = []
     for t in thresholds:
-        tp = sum(1 for lbl, s in scored if lbl == "llm_cdp" and s >= t)
-        fn = sum(1 for lbl, s in scored if lbl == "llm_cdp" and s < t)
+        tp = sum(1 for lbl, s in scored if lbl == other_label and s >= t)
+        fn = sum(1 for lbl, s in scored if lbl == other_label and s < t)
         fp = sum(1 for lbl, s in scored if lbl == "human" and s >= t)
         tn = sum(1 for lbl, s in scored if lbl == "human" and s < t)
         points.append((t, tp, fn, fp, tn))
     return points
+
+
+def per_metric_separation(human_rows, other_rows, metrics):
+    """Human vs one other group, per metric. Used both for the human-vs-
+    agent_raw_cdp/agent_llm_cdp report and (see adversarial_rescore.py) for
+    human-vs-stealth-typing-adversary."""
+    results = {}
+    for metric in metrics:
+        pos, neg = paired_values(other_rows, human_rows, metric)
+        results[metric] = {
+            "human_vals": neg,
+            "other_vals": pos,
+            "auc": auc(pos, neg),
+        }
+    return results
+
+
+def run_composite(rows_by_id, human_ids, other_ids, name, directions, other_label="other"):
+    print(f"\n=== LOOCV COMPOSITE: {name} ===")
+    print(f"metrics + direction (+1=higher is more automation-like): {directions}")
+    scored_full = build_composite_loocv(rows_by_id, human_ids, other_ids, directions, other_label)
+    scored = [(lbl, s) for _sid, lbl, s, _k in scored_full]
+    n_human_scored = sum(1 for lbl, _ in scored if lbl == "human")
+    n_other_scored = sum(1 for lbl, _ in scored if lbl == other_label)
+    print(f"sessions scored: human={n_human_scored}/{len(human_ids)}  {other_label}={n_other_scored}/{len(other_ids)}")
+    human_scores = [s for lbl, s in scored if lbl == "human"]
+    other_scores = [s for lbl, s in scored if lbl == other_label]
+    loocv_auc = auc(other_scores, human_scores)
+    print(f"LOOCV AUC (human vs {other_label}): {loocv_auc}")
+    ci = bootstrap_auc_ci(other_scores, human_scores)
+    if ci:
+        print(f"95% bootstrap CI: [{ci[0]:.2f}, {ci[1]:.2f}]")
+
+    points = roc_points(scored, other_label)
+    if not points:
+        print("no scoreable sessions — every session had none of the composite's metrics populated")
+        return {"scored": scored_full, "auc": loocv_auc, "ci": ci, "threshold": None,
+                "tp": 0, "fn": n_other_scored, "fp": 0, "tn": n_human_scored}
+    best = max(points, key=lambda p: (p[1] / max(1, p[1] + p[2])) - (p[3] / max(1, p[3] + p[4])))
+    t, tp, fn, fp, tn = best
+    print(f"Youden-optimal threshold on LOOCV scores: {t:.3f}")
+    print(f"  confusion matrix @ threshold: TP({other_label} caught)={tp} FN({other_label} missed)={fn} "
+          f"FP(human flagged)={fp} TN(human clear)={tn}")
+    print(f"  {other_label} catch rate: {tp / max(1, tp + fn):.0%}   human false-positive rate: {fp / max(1, fp + tn):.0%}")
+    return {"scored": scored_full, "auc": loocv_auc, "ci": ci, "threshold": t,
+            "tp": tp, "fn": fn, "fp": fp, "tn": tn}
+
+
+def examine_unscoreable(rows_by_id, other_ids, metrics, conn):
+    """Sessions with NONE of `metrics` populated — are they a coverage gap or
+    the most obviously non-human sessions in the set? Cross-checks against
+    has_pointer_samples/has_typing_data/no_pointer_or_click_telemetry, which
+    are populated independently of whether the composite's own metrics fired."""
+    unscoreable = [sid for sid in other_ids if all(rows_by_id[sid].get(m) is None for m in metrics)]
+    print(f"\n=== UNSCOREABLE SESSIONS (none of {metrics} populated): {len(unscoreable)}/{len(other_ids)} ===")
+    for sid in unscoreable:
+        row = rows_by_id[sid]
+        print(f"  {sid[:8]}: has_pointer_samples={row.get('has_pointer_samples')} "
+              f"has_typing_data={row.get('has_typing_data')} "
+              f"no_pointer_or_click_telemetry={row.get('no_pointer_or_click_telemetry')} "
+              f"ran_arcade={row.get('ran_arcade')}")
+    return unscoreable
 
 
 def main():
@@ -163,8 +239,10 @@ def main():
     print(f"GROUP SIZES: human={len(human_ids)} agent_raw_cdp={len(raw_ids)} "
           f"agent_llm_cdp={len(llm_ids)} wild_scanner={len(wild_ids)}")
 
+    all_metrics = METRICS + NULLITY_METRICS
+
     results = {}
-    for metric in METRICS:
+    for metric in all_metrics:
         raw_pos, raw_neg = paired_values(raw_rows, human_rows, metric)
         llm_pos, llm_neg = paired_values(llm_rows, human_rows, metric)
         auc_raw = auc(raw_pos, raw_neg)
@@ -185,7 +263,8 @@ def main():
 
     print("\n=== PER-METRIC SEPARATION, ranked by |AUC-0.5| on human vs agent_llm_cdp ===\n")
     for metric, r in ranked:
-        print(f"--- {metric} ---")
+        tag = " [NULLITY]" if metric in NULLITY_METRICS else ""
+        print(f"--- {metric}{tag} ---")
         print(f"  human:   {summ(r['human_vals'])}")
         print(f"  raw_cdp: {summ(r['raw_vals'])}   AUC(human vs raw_cdp) = {r['auc_human_vs_raw']}")
         print(f"  llm_cdp: {summ(r['llm_vals'])}   AUC(human vs llm_cdp) = {r['auc_human_vs_llm']}")
@@ -200,39 +279,40 @@ def main():
     for sid, row in zip(llm_ids, llm_rows):
         rows_by_id[sid] = row
 
-    def run_composite(name, directions):
-        print(f"\n=== LOOCV COMPOSITE: {name} ===")
-        print(f"metrics + direction (+1=higher is more automation-like): {directions}")
-        scored_full = build_composite_loocv(rows_by_id, human_ids, llm_ids, directions)
-        scored = [(lbl, s) for _sid, lbl, s, _k in scored_full]
-        n_human_scored = sum(1 for lbl, _ in scored if lbl == "human")
-        n_llm_scored = sum(1 for lbl, _ in scored if lbl == "llm_cdp")
-        print(f"sessions scored: human={n_human_scored}/{len(human_ids)}  llm_cdp={n_llm_scored}/{len(llm_ids)}")
-        human_scores = [s for lbl, s in scored if lbl == "human"]
-        llm_scores = [s for lbl, s in scored if lbl == "llm_cdp"]
-        loocv_auc = auc(llm_scores, human_scores)
-        print(f"LOOCV AUC (human vs llm_cdp): {loocv_auc}")
-        ci = bootstrap_auc_ci(llm_scores, human_scores)
-        if ci:
-            print(f"95% bootstrap CI: [{ci[0]:.2f}, {ci[1]:.2f}]")
-
-        points = roc_points(scored)
-        best = max(points, key=lambda p: (p[1] / max(1, p[1] + p[2])) - (p[3] / max(1, p[3] + p[4])))
-        t, tp, fn, fp, tn = best
-        print(f"Youden-optimal threshold on LOOCV scores: {t:.3f}")
-        print(f"  confusion matrix @ threshold: TP(llm caught)={tp} FN(llm missed)={fn} "
-              f"FP(human flagged)={fp} TN(human clear)={tn}")
-        print(f"  llm_cdp catch rate: {tp / max(1, tp + fn):.0%}   human false-positive rate: {fp / max(1, fp + tn):.0%}")
-        return {"scored": scored_full, "auc": loocv_auc, "ci": ci, "threshold": t,
-                "tp": tp, "fn": fn, "fp": fp, "tn": tn}
+    examine_unscoreable(rows_by_id, llm_ids, ["pointer_sample_density", "ipi_cv", "backspace_rate", "coalesced_event_ratio"], conn)
 
     stat_only = run_composite(
+        rows_by_id, human_ids, llm_ids,
         "statistical-best (ignores deployability)",
         {"error_rate_floor": 1, "ipi_cv": -1, "pointer_sample_density": -1},
+        other_label="llm_cdp",
     )
+    # Naive nullity composite — included to show its own failure mode, not
+    # because it's the recommended one. has_pointer_samples' 2 human false
+    # positives are BOTH sessions with ran_arcade=False (a real visitor who
+    # bounced before playing, never any_pointer_sample by construction —
+    # nothing to do with automation). has_typing_data barely separates at all
+    # (AUC ~0.47, CI crosses 0.5) since Browser Use's fill still emits
+    # key_detail events, just with near-zero interval — presence isn't the
+    # tell, timing (ipi_cv) is. See the engagement-gated version below.
+    naive_nullity = run_composite(
+        rows_by_id, human_ids, llm_ids,
+        "naive nullity (has_pointer_samples/has_typing_data/has_movement_before_click, ungated)",
+        {"has_pointer_samples": -1, "has_typing_data": -1, "has_movement_before_click": -1},
+        other_label="llm_cdp",
+    )
+    # Engagement-gated version: no_pointer_or_click_telemetry (already in
+    # arcade_metrics.py, requires proof of progress via a stage_result AND
+    # zero pointer/click trail) instead of raw has_pointer_samples. Fixes the
+    # naive version's false-positive source by construction — a bounce with
+    # zero engagement can't satisfy the "made progress" half of the gate, so
+    # it can't be misread as automation-like.
     plugin_spec = run_composite(
-        "plugin-spec (deployable metrics only)",
-        {"pointer_sample_density": -1, "ipi_cv": -1, "backspace_rate": -1, "coalesced_event_ratio": -1},
+        rows_by_id, human_ids, llm_ids,
+        "plugin-spec (deployable metrics + engagement-gated nullity)",
+        {"pointer_sample_density": -1, "ipi_cv": -1, "backspace_rate": -1, "coalesced_event_ratio": -1,
+         "no_pointer_or_click_telemetry": 1},
+        other_label="llm_cdp",
     )
 
     return {
@@ -240,6 +320,7 @@ def main():
         "human_rows": human_rows, "raw_rows": raw_rows, "llm_rows": llm_rows, "wild_rows": wild_rows,
         "results": results, "ranked": ranked,
         "stat_only_composite": stat_only, "plugin_spec_composite": plugin_spec,
+        "naive_nullity_composite": naive_nullity,
     }
 
 

@@ -154,9 +154,17 @@ def humanlike_type(page, selector, text):
         page.wait_for_timeout(random.randint(60, 180))
 
 
-def run_one_session(playwright, base_url: str, headless: bool, evasion: str = "full") -> str | None:
+def run_one_session(playwright, base_url: str, headless: bool, evasion: str = "full",
+                     label: str = "agent_stealth_cdp", type_fn=None) -> str | None:
+    """`label`/`type_fn` let a caller reuse this whole gauntlet walk under a
+    different generator label and a different typing strategy without
+    duplicating it — see run_playwright_stealth_typing.py, which swaps in
+    backspace-simulating typing for the adversarial durability test while
+    keeping every other evasion behavior (curved mouse approach before every
+    click, webdriver patch) identical."""
     apply_patch = evasion != "no_patch"
     use_curve = evasion != "no_curve"
+    type_fn = type_fn or humanlike_type
 
     browser = playwright.chromium.launch(headless=headless)
     page = browser.new_page(viewport={"width": 1000, "height": 800})
@@ -164,7 +172,7 @@ def run_one_session(playwright, base_url: str, headless: bool, evasion: str = "f
         page.add_init_script(WEBDRIVER_PATCH)
     cur = (random.uniform(100, 300), random.uniform(100, 300))
     try:
-        page.goto(f"{base_url}/arcade?label=agent_stealth_cdp")
+        page.goto(f"{base_url}/arcade?label={label}")
 
         # C1 — flash reaction. Click somewhere on the canvas, curved approach.
         page.wait_for_selector(".arcade-canvas", timeout=8000)
@@ -259,13 +267,13 @@ def run_one_session(playwright, base_url: str, headless: bool, evasion: str = "f
         # per-keystroke randomized cadence instead of a constant delay.
         page.wait_for_selector(".arcade-phrase-display", timeout=8000)
         phrase = page.text_content(".arcade-phrase-display").strip()
-        humanlike_type(page, ".arcade-type-input", phrase)
+        type_fn(page, ".arcade-type-input", phrase)
         page.press(".arcade-type-input", "Enter")
 
         page.wait_for_selector(".arcade-scatter-field", timeout=5000)
         words = page.eval_on_selector_all(".arcade-scatter-word", "els => els.map(e => e.textContent)")
         for w in words:
-            humanlike_type(page, ".arcade-type-input", w)
+            type_fn(page, ".arcade-type-input", w)
             page.keyboard.press("Enter")
             page.wait_for_timeout(random.randint(80, 200))
 

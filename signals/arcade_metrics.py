@@ -322,6 +322,49 @@ def _telemetry_free_progress(events: list[dict]) -> bool | None:
     return not has_pointer and not has_click
 
 
+MOVEMENT_BEFORE_CLICK_WINDOW_MS = 1000
+
+
+def _has_pointer_samples(events: list[dict]) -> bool:
+    """A human, or any automation driving input through real OS/CDP-level
+    events, always leaves a pointer trail — see _telemetry_free_progress's
+    docstring. This is the same underlying fact restated as a plain per-
+    session boolean instead of gated on "and also produced a stage_result",
+    so it's populated for every session, not just ones that made progress."""
+    return any(e["type"] == "pointer_sample" for e in events)
+
+
+def _has_typing_data(events: list[dict]) -> bool:
+    return any(
+        e["type"] == "key_detail" and e["payload"].get("stage_id") == "a5_type_phrase"
+        for e in events
+    )
+
+
+def _movement_before_click_rate(events: list[dict]) -> float | None:
+    """Per-click boolean (was there at least one pointer_sample on the same
+    stage in the MOVEMENT_BEFORE_CLICK_WINDOW_MS before this click?), then
+    aggregated to a session-level fraction. A programmatic click
+    (Input.dispatchMouseEvent straight to a target, or a JS-fallback click)
+    can produce a click with zero preceding pointer_sample; a cursor that
+    physically has to travel to the target first cannot. None only when the
+    session has no clicks to aggregate over."""
+    samples = [e for e in events if e["type"] == "pointer_sample"]
+    clicks = [e for e in events if e["type"] == "click_detail"]
+    if not clicks:
+        return None
+    flags = []
+    for click in clicks:
+        stage_id = click["payload"].get("stage_id")
+        window_start = click["client_ts"] - MOVEMENT_BEFORE_CLICK_WINDOW_MS
+        preceded = any(
+            s["payload"].get("stage_id") == stage_id and window_start <= s["client_ts"] < click["client_ts"]
+            for s in samples
+        )
+        flags.append(preceded)
+    return sum(flags) / len(flags)
+
+
 def _frame_jank_ratio(events: list[dict]) -> float | None:
     stats = [e["payload"] for e in events if e["type"] == "frame_stats"]
     if not stats:
@@ -390,6 +433,13 @@ def extract(session_id: str, conn: sqlite3.Connection) -> dict:
         "all_clicks_trusted": all_clicks_trusted,
         "stale_element_interaction_rate": stale_element_interaction_rate,
         "no_pointer_or_click_telemetry": _telemetry_free_progress(events),
+        # Nullity-as-feature — see separation_analysis.py's re-run. Structural
+        # absence, not a statistical tendency: a real cursor physically has to
+        # move before it can click, so these are near-impossible for a
+        # programmatic click path to satisfy, not just unlikely.
+        "has_pointer_samples": _has_pointer_samples(events),
+        "has_typing_data": _has_typing_data(events),
+        "has_movement_before_click": _movement_before_click_rate(events),
         # B2 — trace-the-circle. draw_shape_attempted distinguishes "never
         # tried" (bot with no drawing logic, times out) from "tried and
         # produced a suspiciously sparse/inaccurate path."

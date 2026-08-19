@@ -53,7 +53,7 @@ async def rate_limit(request: Request, call_next):
     log.append(now)
     return await call_next(request)
 
-VALID_LABELS = {"human", "agent_raw_cdp", "agent_llm_cdp", "agent_stealth_cdp", "pending", "unknown"}
+VALID_LABELS = {"human", "agent_raw_cdp", "agent_llm_cdp", "agent_stealth_cdp", "agent_stealth_typing_cdp", "pending", "unknown"}
 
 # Self-reported categories on the /arcade reveal screen — a separate, smaller
 # vocabulary from VALID_LABELS (which also covers our own controlled
@@ -91,6 +91,7 @@ LABEL_DISPLAY_NAMES = {
     "agent_raw_cdp": "Raw CDP Bot",
     "agent_llm_cdp": "LLM Agent (Browser Use)",
     "agent_stealth_cdp": "Stealth Bot",
+    "agent_stealth_typing_cdp": "Stealth Bot (human-typing adversarial test)",
     "wild_scanner_suspected": "Wild Scanner",
     "pending": "Pending (unrevealed)",
     "unknown": "Unknown",
@@ -115,6 +116,7 @@ LABEL_TO_CATEGORY = {
     "human": "Human",
     "agent_raw_cdp": "Bot",
     "agent_stealth_cdp": "Bot",
+    "agent_stealth_typing_cdp": "Bot",
     "wild_scanner_suspected": "Bot",
     "agent_llm_cdp": "Agent",
     # /api/reveal overwrites label with the player's own claimed_type on
@@ -377,16 +379,25 @@ class SessionStart(BaseModel):
     build_version: str | None = None
 
 
-HEADER_FINGERPRINT_KEYS = (
-    "accept",
-    "accept-language",
-    "accept-encoding",
-    "sec-ch-ua",
-    "sec-ch-ua-platform",
-    "sec-fetch-site",
-    "sec-fetch-mode",
-    "sec-fetch-dest",
-)
+# Headers never logged at full value even though this is a research harness,
+# not a production capture path — a cookie/authorization value is a live
+# credential, not a fingerprinting signal, and there's no reason to persist
+# one just because it happened to be present on the request.
+HEADER_DENYLIST = ("cookie", "authorization", "proxy-authorization", "x-api-key")
+
+# Superset of what the header-consistency checker (analysis/header_consistency_
+# checker.py) and any future network-layer work need: the old fixed subset
+# missed sec-ch-ua-mobile (needed to catch a mobile-claiming UA sending
+# sec-ch-ua-mobile=?0) and every IP-carrying header (cf-connecting-ip,
+# x-forwarded-for — the exact gap wild_scanner_writeup.md flagged: we had
+# proof the scanner went through Cloudflare's edge but never captured the IP
+# those headers actually carried). Now captures every header present minus
+# HEADER_DENYLIST, not a fixed allowlist, so a header nobody thought to name
+# ahead of time still gets captured instead of silently dropped.
+def _capture_headers(request: Request) -> dict:
+    header_order = list(request.headers.keys())
+    header_values = {k: v for k, v in request.headers.items() if k.lower() not in HEADER_DENYLIST}
+    return {"header_order": header_order, "client_ip": _client_ip(request), **header_values}
 
 
 @app.post("/api/session/start")
@@ -402,11 +413,11 @@ def session_start(body: SessionStart, request: Request):
 
     # Practical, server-observable substitute for TLS/JA4 fingerprinting (which needs
     # raw ClientHello bytes we don't have access to here — see signals/network_fingerprint.py).
-    header_order = list(request.headers.keys())
-    header_values = {k: request.headers.get(k) for k in HEADER_FINGERPRINT_KEYS if k in request.headers}
+    captured = _capture_headers(request)
 
     with get_conn() as conn:
-        upsert_session(conn, body.session_id, label, trust, body.user_agent, body.first_page, received, body.build_version)
+        upsert_session(conn, body.session_id, label, trust, body.user_agent, body.first_page, received,
+                        body.build_version, captured["client_ip"])
         insert_events(
             conn,
             [(
@@ -414,7 +425,7 @@ def session_start(body: SessionStart, request: Request):
                 "http_headers",
                 body.first_page,
                 time.time() * 1000,  # epoch ms, matching collector.js's client_ts scale
-                _dumps({"header_order": header_order, **header_values}),
+                _dumps(captured),
                 received,
             )],
         )
@@ -499,8 +510,33 @@ def reveal(body: RevealBody, request: Request):
         # server-side) — it can make up any session_id and POST straight here. The
         # upsert is a no-op (ON CONFLICT DO NOTHING) for sessions that already exist
         # from the normal /arcade flow, so it never clobbers real telemetry-linked rows.
+        captured = _capture_headers(request)
         upsert_session(conn, body.session_id, "pending", None,
-                        request.headers.get("user-agent"), None, now)
+                        request.headers.get("user-agent"), None, now,
+                        client_ip=captured["client_ip"])
+        # A session with no prior http_headers event is exactly the pure-HTTP,
+        # no-JS case CLAUDE.md describes — this is the only place its headers
+        # will ever get captured, since it never ran arcade.js to hit
+        # /api/session/start. Guarded so a normal /arcade session (which
+        # already logged its real page-load headers there) doesn't get a
+        # second, less meaningful set from the reveal POST itself overwriting
+        # the picture.
+        existing = conn.execute(
+            "SELECT 1 FROM events WHERE session_id = ? AND type = 'http_headers' LIMIT 1",
+            (body.session_id,),
+        ).fetchone()
+        if not existing:
+            insert_events(
+                conn,
+                [(
+                    body.session_id,
+                    "http_headers",
+                    "/api/reveal",
+                    time.time() * 1000,
+                    _dumps(captured),
+                    now,
+                )],
+            )
         # Honor-system product: the claim is trusted outright, no consistency check
         # against telemetry — every reveal lands as "verified".
         reveal_session(conn, body.session_id, body.claimed_type, body.tool, "verified", now,

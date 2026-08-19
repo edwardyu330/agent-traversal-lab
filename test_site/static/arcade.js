@@ -39,7 +39,7 @@
   // at reveal. A generator session never needs to submit the reveal form at
   // all: label/trust are already correct from session-start (server.py's
   // /api/session/start sets trust='verified' for any non-"pending" label).
-  const GENERATOR_LABELS = new Set(["agent_raw_cdp", "agent_llm_cdp", "agent_stealth_cdp"]);
+  const GENERATOR_LABELS = new Set(["agent_raw_cdp", "agent_llm_cdp", "agent_stealth_cdp", "agent_stealth_typing_cdp"]);
 
   function resolveLabel() {
     const fromQuery = new URLSearchParams(location.search).get("label");
