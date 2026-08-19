@@ -1,19 +1,21 @@
 (function () {
   "use strict";
 
-  // Same instruction, delivered three ways, pointing at three different shapes.
-  // Which shape gets clicked classifies HOW the player perceives the page, not
-  // just whether they're automated:
-  //   - the canvas-rendered instruction is pixels, invisible to any DOM/HTML
-  //     parser that doesn't actually render and read the page visually.
-  //   - the visually-hidden + aria-hidden instruction is invisible on screen AND
-  //     excluded from the accessibility tree — reachable only by reading raw
-  //     DOM/HTML source, which a human or a vision-grounded agent never does.
-  //   - the normal visible instruction doesn't discriminate — anyone perceiving
-  //     the page at all, by any method, can find it. That's why it maps to
-  //     "ambiguous" rather than its own category in arcade_metrics.py.
+  // One instruction, shown on screen exactly one way (canvas-rendered pixels
+  // AND the plain visible text both name the SAME shape — previously they
+  // named two different shapes, which just read as a confusing/broken UI:
+  // "click the shape" pointing at two different shapes at once). A second,
+  // different shape's name is also planted in a visually-hidden + aria-hidden
+  // element — invisible on screen and excluded from the accessibility tree,
+  // reachable only by reading raw DOM/HTML source, which a human or a
+  // vision-grounded agent never does. Clicking that one instead of the shown
+  // one is the actual signal (perception_mode == "dom", scored in
+  // rule_based_scorer.py) — merging the vision/visible channels costs no
+  // detection signal, since "vision" alone was never scored, only "dom" was.
   const SHAPES = ["circle", "square", "triangle", "star", "diamond"];
   const TIMEOUT_MS = 8000;
+  const MAX_WRONG_ATTEMPTS = 5; // safety valve — see onShapeClick
+  const PENALTY_PER_WRONG = 3;
 
   function shuffle(arr) {
     const a = arr.slice();
@@ -41,7 +43,7 @@
     title: "Perception Probe",
 
     mount(container, ctx) {
-      const [visionKind, domKind, visibleKind] = shuffle(SHAPES).slice(0, 3);
+      const [visionKind, domKind] = shuffle(SHAPES).slice(0, 2);
 
       const wrap = document.createElement("div");
       wrap.className = "arcade-stage arcade-stage-a1 fade-in";
@@ -64,10 +66,18 @@
       g.fillText(`Click the ${visionKind.toUpperCase()}`, canvas.width / 2, canvas.height / 2);
 
       wrap.querySelector(".arcade-hidden-instruction").textContent = `Click the ${domKind}`;
-      wrap.querySelector(".arcade-instruction").textContent = `Click the ${visibleKind}`;
+      wrap.querySelector(".arcade-instruction").textContent = `Click the ${visionKind}`;
 
       const field = wrap.querySelector(".arcade-shape-field");
-      const positions = shuffle([10, 30, 50, 70, 90]); // percent-left, scattered
+      // 5 horizontal zones (one per shape), shuffled so which shape lands in
+      // which zone varies too, with random jitter within each zone — spread
+      // stays even (no overlap risk between zones) while the actual layout
+      // is different every round, not one of a handful of fixed spots.
+      const zoneOrder = shuffle([0, 1, 2, 3, 4]);
+      const positions = zoneOrder.map((zone) => ({
+        left: 8 + zone * 18 + Math.random() * 10,
+        top: 15 + Math.random() * 55,
+      }));
       const startTs = performance.now();
       let done = false;
       let rafId = null;
@@ -77,10 +87,11 @@
       SHAPES.forEach((kind, i) => {
         const el = document.createElement("div");
         el.className = "arcade-shape";
-        el.style.cssText = `left:${positions[i]}%; top:${20 + (i % 2) * 40}%; ${shapeStyle(kind)}`;
+        el.style.cssText = `left:${positions[i].left}%; top:${positions[i].top}%; ${shapeStyle(kind)}`;
         el.dataset.kind = kind;
         el.addEventListener("click", () => {
           ctx.setClickTargetRect(el.isConnected ? el.getBoundingClientRect() : null, !el.isConnected);
+          ctx.reactAt(el, kind === visionKind || kind === domKind);
           onShapeClick(kind);
         });
         field.appendChild(el);
@@ -144,21 +155,46 @@
         rafId = null;
       }
 
+      let wrongAttempts = 0;
+
+      // A wrong click (neither the shown instruction's shape nor the hidden
+      // decoy) doesn't end the stage — it doesn't advance at all, correct or
+      // not being the only way out, up to MAX_WRONG_ATTEMPTS. A spam-clicking
+      // bot has to actually land on one of the two valid shapes eventually;
+      // it can't just click once and ride the stage forward regardless.
       function onShapeClick(kind) {
         if (done) return;
-        done = true;
-        stopFloating();
-        clearTimeout(timeoutId);
-        let choice = "none";
-        if (kind === visionKind) choice = "vision";
-        else if (kind === domKind) choice = "dom";
-        else if (kind === visibleKind) choice = "visible";
-        ctx.onDone({
+        if (kind === visionKind || kind === domKind) {
+          done = true;
+          stopFloating();
+          clearTimeout(timeoutId);
+          ctx.onDone({
+            duration_ms: performance.now() - startTs,
+            correct: true,
+            extra: { perception_choice: kind === visionKind ? "vision" : "dom", vision_kind: visionKind, dom_kind: domKind, clicked_kind: kind, wrong_attempts: wrongAttempts },
+            player_points: Math.max(0, 15 - wrongAttempts * PENALTY_PER_WRONG),
+          });
+          return;
+        }
+        wrongAttempts += 1;
+        ctx.track("stage_result", {
+          stage_id: "a1_perception_probe",
+          stage_tier: "A",
           duration_ms: performance.now() - startTs,
-          correct: choice !== "none",
-          extra: { perception_choice: choice, vision_kind: visionKind, dom_kind: domKind, visible_kind: visibleKind, clicked_kind: kind },
-          player_points: choice === "visible" ? 15 : (choice !== "none" ? 5 : 0),
+          correct: false,
+          extra: { perception_choice: "wrong", vision_kind: visionKind, dom_kind: domKind, clicked_kind: kind, attempt: wrongAttempts },
         });
+        if (wrongAttempts >= MAX_WRONG_ATTEMPTS) {
+          done = true;
+          stopFloating();
+          clearTimeout(timeoutId);
+          ctx.onDone({
+            duration_ms: performance.now() - startTs,
+            correct: false,
+            extra: { perception_choice: "none", vision_kind: visionKind, dom_kind: domKind, clicked_kind: kind, wrong_attempts: wrongAttempts, gave_up: true },
+            player_points: 0,
+          });
+        }
       }
 
       const timeoutId = setTimeout(() => {
@@ -168,7 +204,7 @@
         ctx.onDone({
           duration_ms: performance.now() - startTs,
           correct: false,
-          extra: { perception_choice: "none", vision_kind: visionKind, dom_kind: domKind, visible_kind: visibleKind, clicked_kind: null },
+          extra: { perception_choice: "none", vision_kind: visionKind, dom_kind: domKind, clicked_kind: null },
           player_points: 0,
         });
       }, TIMEOUT_MS);

@@ -35,6 +35,9 @@ NUMERIC_SIGNALS = [
     ("arcade_metrics", "coalesced_event_ratio"),
     ("arcade_metrics", "coalesced_extra_samples_per_batch"),
     ("arcade_metrics", "stale_element_interaction_rate"),
+    ("arcade_metrics", "draw_shape_point_count"),
+    ("arcade_metrics", "draw_shape_mean_deviation_px"),
+    ("arcade_metrics", "draw_shape_angular_coverage_deg"),
 ]
 BOOL_SIGNALS = [
     ("webdriver_artifacts", "webdriver_flag"),
@@ -44,6 +47,7 @@ BOOL_SIGNALS = [
     ("arcade_metrics", "all_clicks_trusted"),
     ("arcade_metrics", "has_pointerrawupdate"),
     ("arcade_metrics", "no_pointer_or_click_telemetry"),
+    ("arcade_metrics", "draw_shape_attempted"),
 ]
 # String-valued signals — kept separate from NUMERIC_SIGNALS since they can't go
 # through pd.to_numeric or a mean() aggregation; shown as value-count breakdowns.
@@ -81,6 +85,10 @@ SIGNAL_LABELS = {
     "arcade_metrics.all_clicks_trusted": "All clicks isTrusted",
     "arcade_metrics.has_pointerrawupdate": "Supports pointerrawupdate",
     "arcade_metrics.no_pointer_or_click_telemetry": "Zero pointer/click telemetry despite progress",
+    "arcade_metrics.draw_shape_point_count": "Draw-circle sample count",
+    "arcade_metrics.draw_shape_mean_deviation_px": "Draw-circle mean deviation (px)",
+    "arcade_metrics.draw_shape_angular_coverage_deg": "Draw-circle angular coverage (deg)",
+    "arcade_metrics.draw_shape_attempted": "Attempted the draw-circle stage",
 }
 
 

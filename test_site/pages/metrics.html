@@ -52,6 +52,12 @@
     .rate-value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 10px; }
     .rate-caption { font-size: 12px; font-weight: 400; color: #888; margin-left: 4px; }
     .rate-detail { font-size: 12px; color: #777; margin-top: 4px; }
+
+    .hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+    .hist-card { background: #161916; border: 1px solid #232823; border-radius: 10px; padding: 14px 16px; }
+    .hist-title { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+    .hist-svg { width: 100%; height: 120px; display: block; }
+    .hist-axis { display: flex; justify-content: space-between; font-size: 11px; color: #777; margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -74,6 +80,14 @@
         <div class="card highlight">
           <div class="value">{{ overview.avg_overall_detection_score }}</div>
           <div class="label">Avg. detection score (0-100)</div>
+        </div>
+        <div class="card highlight">
+          <div class="value">{{ score_stats["Bot"]["overall_detection_score"] if "Bot" in score_stats else "—" }}</div>
+          <div class="label">Avg. Bot detection score</div>
+        </div>
+        <div class="card highlight">
+          <div class="value">{{ score_stats["Agent"]["overall_detection_score"] if "Agent" in score_stats else "—" }}</div>
+          <div class="label">Avg. Agent detection score</div>
         </div>
         <div class="card highlight">
           <div class="value">{{ overview.avg_player_score if overview.avg_player_score is not none else "—" }}</div>
@@ -128,6 +142,96 @@
         </div>
         {% endfor %}
       </div>
+    </section>
+
+    <section>
+      <h2>Score distribution — confidence by category</h2>
+      <p class="section-note">
+        overall_detection_score, bucketed in 10s, per category. The detection-rate cards
+        above collapse this to one number at the score&ge;50 line (dashed); this shows the
+        actual shape — a category clustered hard at one edge means the scorer is confident,
+        one piled up near the middle means it's mostly guessing even where the rate looks
+        fine on average.
+      </p>
+      <div class="hist-grid">
+        {% for category in categories %}
+        <div class="hist-card">
+          <div class="hist-title">{{ category }}</div>
+          <svg viewBox="0 0 300 120" class="hist-svg" preserveAspectRatio="none">
+            <line x1="150" y1="0" x2="150" y2="100" stroke="#555" stroke-width="1" stroke-dasharray="3,3" />
+            {% for count in score_histograms[category] %}
+            {% set bar_h = (count / hist_max * 96) if hist_max else 0 %}
+            <rect x="{{ loop.index0 * 30 + 2 }}" y="{{ 100 - bar_h }}" width="26" height="{{ bar_h }}"
+                  fill="{{ {'Human': '#6fcf97', 'Bot': '#e07a5f', 'Agent': '#9b8cf2'}.get(category, '#6fcf97') }}" opacity="0.85" />
+            {% if count > 0 %}
+            <text x="{{ loop.index0 * 30 + 15 }}" y="{{ 100 - bar_h - 4 }}" font-size="9" fill="#999" text-anchor="middle">{{ count }}</text>
+            {% endif %}
+            {% endfor %}
+            <line x1="0" y1="100" x2="300" y2="100" stroke="#333" stroke-width="1" />
+          </svg>
+          <div class="hist-axis"><span>0</span><span>50</span><span>100</span></div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section>
+      <h2>Recorded accuracy</h2>
+      <p class="section-note">
+        Every /api/reveal writes a detection_accuracy event — correct calls included, not just
+        misses, human self-reports included, not just bots/agents. This is a persisted log of what
+        the verdict actually said AT THE TIME, using whatever weights were live then — unlike
+        Detection Rates above, which re-scores everything with CURRENT weights right now. The two
+        will drift apart as weights adapt; that gap is itself a signal of how much the live system
+        has moved.
+      </p>
+      <div class="card-row">
+        <div class="card highlight">
+          <div class="value">{{ overall_accuracy.rate_pct if overall_accuracy.rate_pct is not none else "—" }}{% if overall_accuracy.rate_pct is not none %}%{% endif %}</div>
+          <div class="label">Overall accuracy ({{ overall_accuracy.correct }}/{{ overall_accuracy.n }} reveals)</div>
+        </div>
+        {% for category in categories %}
+        {% set a = accuracy_by_category[category] %}
+        <div class="card">
+          <div class="value">{{ a.rate_pct if a.rate_pct is not none else "—" }}{% if a.rate_pct is not none %}%{% endif %}</div>
+          <div class="label">{{ category }} ({{ a.correct }}/{{ a.n }})</div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section>
+      <h2>Detection rate over time</h2>
+      <p class="section-note">
+        Rolling accuracy over the last 10 reveals in each series, in the order reveals actually
+        happened — the direct visual for "is the live weight system (and the adaptive stealth bot)
+        actually converging as more runs go by," not just a single before/after snapshot. Needs at
+        least 2 reveals in a series to draw a line; short series will look jagged, that's expected
+        with few points.
+      </p>
+      {% if overall_trend_svg %}
+      <div class="hist-card" style="max-width:640px;">
+        <svg viewBox="0 0 600 140" class="hist-svg" style="height:160px;" preserveAspectRatio="none">
+          <line x1="0" y1="70" x2="600" y2="70" stroke="#333" stroke-width="1" stroke-dasharray="3,3" />
+          <polyline points="{{ overall_trend_svg }}" fill="none" stroke="#f0f0ec" stroke-width="2" />
+          {% for category in categories %}
+          {% if trend_svg[category] %}
+          <polyline points="{{ trend_svg[category] }}" fill="none" stroke="{{ {'Human': '#6fcf97', 'Bot': '#e07a5f', 'Agent': '#9b8cf2'}.get(category, '#888') }}" stroke-width="2" opacity="0.85" />
+          {% endif %}
+          {% endfor %}
+        </svg>
+        <div class="hist-axis">
+          <span><span style="color:#f0f0ec;">&#9632;</span> Overall</span>
+          {% for category in categories %}
+          {% if trend_svg[category] %}
+          <span><span style="color:{{ {'Human': '#6fcf97', 'Bot': '#e07a5f', 'Agent': '#9b8cf2'}.get(category, '#888') }};">&#9632;</span> {{ category }}</span>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      {% else %}
+      <p class="muted">Not enough reveals yet to plot a trend (need at least 2).</p>
+      {% endif %}
     </section>
 
     <section>

@@ -45,6 +45,9 @@ DEFAULT_WEIGHTS = {
     "sparse_pointer_movement": 10,
     "zero_errors": 8,
     "no_pointer_or_click_telemetry": 55,
+    "sparse_draw_path": 15,
+    "chronic_incorrect_spam": 60,
+    "outside_human_baseline": 20,
 }
 
 

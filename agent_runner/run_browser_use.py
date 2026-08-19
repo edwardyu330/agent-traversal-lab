@@ -50,8 +50,10 @@ TASK_DESCRIPTION = (
     "screen. Some challenges involve targets that appear and disappear in under a "
     "second — if you miss the window, the game moves on by itself; don't retry a "
     "challenge that already advanced, and don't get stuck re-reading instructions for "
-    "a screen that's already gone. Keep going until the page shows a final score and a "
-    "'We think you were: ...' verdict — that's the end of the run."
+    "a screen that's already gone. One challenge asks you to trace a circle: press the "
+    "mouse down on the circle's outline, drag all the way around it, then release — do "
+    "your best, it doesn't need to be perfect. Keep going until the page shows a final "
+    "score and a 'We think you were: ...' verdict — that's the end of the run."
 )
 
 

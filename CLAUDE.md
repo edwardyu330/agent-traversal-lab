@@ -116,7 +116,7 @@ tracks per-stage frame stats, and logs a `stage_result` event with whatever `cor
 `extra` the stage reported. Run order (`arcade.html`'s script tags, which is also
 execution/registration order) alternates fun and research per the original design intent:
 `c1_flash_reaction` → `a1_perception_probe` → `c4_whack_a_mole` → `a2_visual_vs_dom_order`
-→ `b1_layout_shift` → `a5_type_phrase` → `a4_complexity_ramp`.
+→ `b1_layout_shift` → `b2_draw_shape` → `a5_type_phrase` → `a4_complexity_ramp`.
 
 - `c1_flash_reaction` — reaction-time wash game.
 - `a1_perception_probe` — same instruction delivered three ways (canvas-rendered image,
@@ -153,7 +153,17 @@ execution/registration order) alternates fun and research per the original desig
   aggregate at the end, which is what actually makes `error_rate_floor` meaningful now
   instead of resting on 2-3 near-perfect stages.
 
-A3, A6, B2 from the original design are still not built — `arcade_metrics.py` stubs
+- `b2_draw_shape` — trace a circle by pressing, dragging all the way around its
+  outline, and releasing. The signal isn't the final accuracy — it's that a real
+  drag naturally produces dozens of intermediate pointer samples along a
+  continuously curving path, which is specifically expensive for a script to
+  fake cheaply (`draw_shape_point_count` catches a script that "draws" via a
+  couple of teleporting `mouse.move()` calls; see `sparse_draw_path` in
+  `rule_based_scorer.py`, the one rule this stage actually feeds — everything
+  else it captures, same as A4/A5/B1's newer fields, is visible on `/metrics`
+  but not yet wired into scoring).
+
+A3, A6 from the original design are still not built — `arcade_metrics.py` stubs
 `path_optimality`/`backtrack_count`/`dead_end_rate` (need A6) as explicit `None`.
 
 None of the four newest metrics (`latency_complexity_slope`, `stale_frame_offset_ms`,
@@ -207,7 +217,7 @@ without playing, linked from `/arcade`'s header — for people who just want to 
 standings. Hits the same `/api/leaderboard` endpoint the reveal screen uses; no separate
 backend logic to keep in sync.
 
-Not built from the original `/arcade` spec: A3/A6/B2.
+Not built from the original `/arcade` spec: A3/A6.
 
 ## Google Sheets sync
 

@@ -69,6 +69,7 @@
           clearTimeout(timeoutId);
           const reactionMs = performance.now() - spawnTs;
           const correct = !isTrap; // clicking a trap is always wrong
+          ctx.reactAt(mole, correct); // read before recordRound removes it
           recordRound(correct, isTrap, true, reactionMs);
         }
         mole.addEventListener("click", onMoleClick);

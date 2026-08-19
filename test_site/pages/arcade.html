@@ -20,6 +20,13 @@
       font-variant-numeric: tabular-nums; font-feature-settings: "tnum";
       font-size: 15px; color: #6fcf97;
     }
+    header .suspicion {
+      font-variant-numeric: tabular-nums; font-feature-settings: "tnum";
+      font-size: 15px; color: #888; transition: color 400ms ease;
+    }
+    header .suspicion.low { color: #6fcf97; }
+    header .suspicion.medium { color: #f2cc8f; }
+    header .suspicion.high { color: #e07a5f; }
     main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
     #arcade-root { width: 100%; max-width: 720px; min-height: 420px; display: flex; align-items: center; justify-content: center; position: relative; }
 
@@ -70,7 +77,9 @@
     }
     .arcade-order-box:hover { transform: scale(1.08); }
 
-    .arcade-phrase-display { font-size: 24px; font-weight: 700; letter-spacing: 0.5px; margin-top: 20px; color: #6fcf97; }
+    .arcade-phrase-display { font-size: 24px; font-weight: 700; letter-spacing: 0.5px; margin-top: 20px; color: #555; }
+    .arcade-phrase-display span.char-correct { color: #6fcf97; }
+    .arcade-phrase-display span.char-wrong { color: #e07a5f; background: rgba(224, 122, 95, 0.18); }
     .arcade-type-input {
       width: 100%; max-width: 420px; padding: 12px 14px; border-radius: 8px; border: 1px solid #333;
       background: #1a1d1a; color: #f0f0ec; font-size: 18px; margin-top: 20px; text-align: center;
@@ -82,7 +91,7 @@
       background: #1a1d1a; border: 1px solid #333; border-radius: 6px; padding: 6px 12px;
       transform: translate(-50%, -50%); transition: opacity 200ms ease, transform 200ms ease;
     }
-    .arcade-scatter-word.found { opacity: 0.25; color: #6fcf97; text-decoration: line-through; transform: translate(-50%, -50%) scale(0.9); }
+    .arcade-scatter-word.found { opacity: 0.75; color: #999; text-decoration: line-through; text-decoration-thickness: 2px; transform: translate(-50%, -50%) scale(0.9); }
 
     .arcade-ramp-grid {
       display: grid; gap: 8px; max-width: 420px; margin: 20px auto 0;
@@ -93,6 +102,8 @@
     }
     .arcade-ramp-cell.target { background: #52a373; }
     .arcade-ramp-cell:hover { transform: scale(1.06); }
+
+    .arcade-draw-canvas { border-radius: 10px; cursor: crosshair; touch-action: none; margin: 20px auto 0; display: block; }
 
     .arcade-shift-field { position: relative; height: 280px; margin-top: 20px; }
     .arcade-shift-target {
@@ -117,15 +128,21 @@
       to { transform: scale(1); opacity: 1; }
     }
 
-    .arcade-click-pop {
-      position: fixed; width: 36px; height: 36px; border-radius: 50%;
-      transform: translate(-50%, -50%); pointer-events: none; z-index: 80;
-      border: 3px solid #6fcf97; animation: arcadeClickPop 380ms ease-out forwards;
+    .arcade-reaction {
+      position: fixed; pointer-events: none; z-index: 80;
+      animation: arcadeReactionPop 320ms ease-out forwards;
     }
-    .arcade-click-pop.miss { border-color: #e07a5f; }
-    @keyframes arcadeClickPop {
-      0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0.9; }
-      100% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; }
+    .arcade-reaction.hit { box-shadow: 0 0 0 2px #6fcf97; }
+    .arcade-reaction.miss { box-shadow: 0 0 0 2px #e07a5f; animation-name: arcadeReactionShake; }
+    @keyframes arcadeReactionPop {
+      0% { transform: scale(1); opacity: 0.9; }
+      100% { transform: scale(1.25); opacity: 0; }
+    }
+    @keyframes arcadeReactionShake {
+      0% { transform: scale(1) translateX(0); opacity: 0.9; }
+      30% { transform: scale(1.03) translateX(-4px); }
+      60% { transform: scale(1.03) translateX(4px); }
+      100% { transform: scale(1.08) translateX(0); opacity: 0; }
     }
     .arcade-type-input.arcade-input-flash { animation: arcadeInputFlash 380ms ease; }
     @keyframes arcadeInputFlash {
@@ -134,7 +151,7 @@
       100% { box-shadow: 0 0 0 0 rgba(111, 207, 151, 0); }
     }
     @media (prefers-reduced-motion: reduce) {
-      .arcade-click-pop, .arcade-input-flash { animation: none !important; display: none; }
+      .arcade-reaction, .arcade-input-flash { animation: none !important; display: none; }
     }
 
     .privacy-note { font-size: 12px; color: #888; padding: 8px 24px; border-bottom: 1px solid #1a1d1a; }
@@ -172,6 +189,11 @@
     #reveal-form { margin-top: 12px; }
     .claim-help { font-size: 12px; color: #999; line-height: 1.6; max-width: 480px; margin: 0 0 12px; }
     .claim-help strong { color: #ccc; }
+    .record-push {
+      font-size: 13px; color: #cde9d8; line-height: 1.6; max-width: 480px;
+      background: #16241a; border: 1px solid #2f4a34; border-radius: 8px;
+      padding: 10px 14px; margin: 0 0 14px;
+    }
     #reveal-form label { display: inline-block; margin: 0 12px 12px 0; font-size: 14px; }
     #reveal-form input[type=text] {
       width: 100%; max-width: 320px; padding: 9px 10px; border-radius: 6px; border: 1px solid #333;
@@ -190,6 +212,9 @@
     <p class="brand">The Turing Arcade</p>
     <nav style="display:flex; align-items:center; gap:18px;">
       <a href="/leaderboard" style="color:#ccc; font-size:13px; text-decoration:none;">Leaderboard</a>
+      <p class="suspicion" id="suspicion-row" style="margin:0; display:none;">
+        Suspicion: <span id="suspicion-value">—</span>
+      </p>
       <p class="score" style="margin:0;">Score: <span id="live-score">0</span></p>
     </nav>
   </header>
@@ -207,10 +232,16 @@
         precision. When you're done, we'll guess whether you were a human, a bot
         script, or an AI agent. Then you tell us which one you actually were.
       </p>
+      <p>
+        Aim for a <strong>high score</strong> — getting a challenge wrong doesn't just
+        skip it, it costs points and sends you back to try again, so going fast and
+        guessing isn't actually faster.
+      </p>
       <ul>
         <li>~7 short stages, most under 10 seconds each</li>
         <li>No sign-up required to play</li>
         <li>Score goes on the leaderboard for your category</li>
+        <li>Wrong answers cost points and reset that challenge — no free passes</li>
         <li><strong>Human</strong> — a person playing normally</li>
         <li><strong>Bot / script</strong> — code on a fixed script, no on-screen reasoning</li>
         <li><strong>AI agent</strong> — an LLM deciding each move by looking at the page</li>
@@ -229,6 +260,7 @@
   <script src="/static/arcade_stages/c4_whack_a_mole.js"></script>
   <script src="/static/arcade_stages/a2_visual_dom.js"></script>
   <script src="/static/arcade_stages/b1_layout_shift.js"></script>
+  <script src="/static/arcade_stages/b2_draw_shape.js"></script>
   <script src="/static/arcade_stages/a5_type_phrase.js"></script>
   <script src="/static/arcade_stages/a4_complexity_ramp.js"></script>
   <script src="/static/arcade.js"></script>
@@ -266,6 +298,8 @@
       }
 
       function renderReveal(result) {
+        stopSuspicionMeter();
+        document.getElementById("suspicion-row").style.display = "none";
         root.style.display = "none";
         reveal.style.display = "block";
         reveal.classList.add("fade-in");
@@ -287,9 +321,13 @@
           <div id="verdict-block" style="display:none;">
             <p class="verdict-text" id="verdict-text"></p>
             <form id="reveal-form">
-              <label for="player-name">Name (for the leaderboard)</label>
-              <input type="text" id="player-name" placeholder="Anonymous" maxlength="40" />
-              <label for="player-email">Email (optional, not shown publicly)</label>
+              <p class="record-push">
+                Add your name to claim your spot on the leaderboard — it's required to see
+                results below. Email is still optional, only for occasional updates.
+              </p>
+              <label for="player-name">Name (required to see the leaderboard)</label>
+              <input type="text" id="player-name" placeholder="Your name" maxlength="40" autofocus required />
+              <label for="player-email">Email (for occasional updates — never shown publicly)</label>
               <input type="email" id="player-email" placeholder="you@example.com" />
               <p style="margin:16px 0 8px;">What were you really?</p>
               <p class="claim-help">
@@ -311,7 +349,7 @@
           </div>
           <div id="reveal-thanks" style="display:none;">
             <p>Thanks — your answer has been recorded.</p>
-            <p class="muted">Play again any time.</p>
+            <p><button type="button" id="play-again-btn" class="start-btn">Play Again →</button></p>
             <div class="leaderboard-tabs">
               <button type="button" data-label="human">Human</button>
               <button type="button" data-label="bot_script">Bot</button>
@@ -336,6 +374,36 @@
         document.querySelectorAll(".leaderboard-tabs button").forEach((b) => {
           b.addEventListener("click", () => loadLeaderboard(b.dataset.label));
         });
+
+        const playAgainBtn = document.getElementById("play-again-btn");
+        if (playAgainBtn) playAgainBtn.addEventListener("click", () => { location.href = "/arcade"; });
+
+        // Generator sessions (agent_raw_cdp/agent_stealth_cdp/agent_llm_cdp) already
+        // know their true type from ?label= at session-start — no human is at the
+        // keyboard to fill in the form, and none of the driver scripts should have to
+        // reach into the page to do it either. Auto-submit the same /api/reveal a human
+        // would, straight past the manual form, so generator sessions actually show up
+        // on the leaderboard and feed update_weights_from_reveal() with verified
+        // ground truth (unlike anonymous self-report, we KNOW these labels are right).
+        const GENERATOR_CLAIMED_TYPE = { agent_raw_cdp: "bot_script", agent_stealth_cdp: "bot_script", agent_llm_cdp: "agent" };
+        const claimedTypeForLabel = GENERATOR_CLAIMED_TYPE[window.ARCADE.label];
+        if (claimedTypeForLabel) {
+          fetch("/api/reveal", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: result.sessionId,
+              claimed_type: claimedTypeForLabel,
+              tool: window.ARCADE.label,
+              player_score: result.playerScore,
+            }),
+          }).then(() => {
+            document.getElementById("verdict-block").style.display = "none";
+            document.getElementById("reveal-thanks").style.display = "block";
+            loadLeaderboard(claimedTypeForLabel);
+          }).catch(() => {});
+          return;
+        }
 
         reveal.addEventListener("submit", function handler(e) {
           if (e.target.id !== "reveal-form") return;
@@ -364,9 +432,47 @@
         });
       }
 
+      // Live suspicion predictor — polls the same /api/verdict every player
+      // (human or bot) already hits at reveal, just repeatedly during play
+      // instead of once at the end. Deliberately shows the same two fields
+      // coarse_verdict() already hands the reveal screen (verdict + confidence,
+      // recombined into one 0-100 "suspicion" number) — nothing from
+      // score/band/breakdown/raw_automation_breakdown, which stay
+      // server-side-only. Shown to every player by explicit product choice,
+      // human and bot/agent alike, even though a vision-grounded agent
+      // screenshotting the page could read this value and react to it live —
+      // that tradeoff was made deliberately, not an oversight.
+      const SUSPICION_POLL_MS = 3000;
+      let suspicionIntervalId = null;
+
+      function updateSuspicionMeter() {
+        fetch(`/api/verdict/${ARCADE.sessionId}`)
+          .then((r) => r.json())
+          .then((data) => {
+            const suspicion = data.verdict === "Bot" ? data.confidence : 100 - data.confidence;
+            const row = document.getElementById("suspicion-row");
+            const level = suspicion < 40 ? "low" : suspicion < 70 ? "medium" : "high";
+            row.className = "suspicion " + level;
+            row.style.display = "block";
+            document.getElementById("suspicion-value").textContent = suspicion + "%";
+          })
+          .catch(() => {});
+      }
+
+      function startSuspicionMeter() {
+        updateSuspicionMeter();
+        suspicionIntervalId = setInterval(updateSuspicionMeter, SUSPICION_POLL_MS);
+      }
+
+      function stopSuspicionMeter() {
+        if (suspicionIntervalId) clearInterval(suspicionIntervalId);
+        suspicionIntervalId = null;
+      }
+
       function startGauntlet() {
         landing.style.display = "none";
         root.style.display = "flex";
+        startSuspicionMeter();
         ARCADE.runArcade(root, renderReveal);
       }
 

@@ -174,6 +174,66 @@ def metrics_page(request: Request):
         if isinstance(row.get("category"), float):
             row["category"] = None
 
+    # Persisted accuracy record — every detection_accuracy event ever written
+    # (see /api/reveal), independent of score_session()'s CURRENT weights. This
+    # answers "how often were we actually right at the time," not "how would
+    # today's weights score historical sessions" (that's what the Detection
+    # Rates section above already answers, recomputed live).
+    import json
+
+    with get_conn() as acc_conn:
+        accuracy_event_rows = acc_conn.execute(
+            "SELECT payload_json FROM events WHERE type = 'detection_accuracy' ORDER BY client_ts ASC"
+        ).fetchall()
+    accuracy_rows = [json.loads(r[0]) for r in accuracy_event_rows]
+
+    # Rolling accuracy trend — chronological order, window of the last 10
+    # reveals at each point. This is the direct visual answer to "is the live
+    # weight system actually improving as more tests run," which a single
+    # snapshot accuracy number can't show on its own.
+    TREND_WINDOW = 10
+
+    def rolling_trend(rows):
+        points = []
+        for i in range(len(rows)):
+            window = rows[max(0, i - TREND_WINDOW + 1):i + 1]
+            correct_n = sum(1 for r in window if r.get("correct"))
+            points.append(round(correct_n / len(window) * 100))
+        return points
+
+    accuracy_trend = rolling_trend(accuracy_rows)
+    trend_by_category = {}
+    for category in CATEGORY_ORDER:
+        claimed = {"Human": "human", "Bot": "bot_script", "Agent": "agent"}[category]
+        trend_by_category[category] = rolling_trend([r for r in accuracy_rows if r.get("claimed_type") == claimed])
+
+    def svg_polyline(values, width=600, height=140):
+        if len(values) < 2:
+            return ""
+        step = width / (len(values) - 1)
+        return " ".join(f"{i * step:.1f},{height - (v / 100 * height):.1f}" for i, v in enumerate(values))
+
+    trend_svg = {c: svg_polyline(pts) for c, pts in trend_by_category.items()}
+    overall_trend_svg = svg_polyline(accuracy_trend)
+    accuracy_by_category = {}
+    for category in CATEGORY_ORDER:
+        claimed = {"Human": "human", "Bot": "bot_script", "Agent": "agent"}[category]
+        rows = [r for r in accuracy_rows if r.get("claimed_type") == claimed]
+        n = len(rows)
+        correct_n = sum(1 for r in rows if r.get("correct"))
+        accuracy_by_category[category] = {
+            "n": n,
+            "correct": correct_n,
+            "rate_pct": round(correct_n / n * 100) if n else None,
+        }
+    overall_accuracy = {
+        "n": len(accuracy_rows),
+        "correct": sum(1 for r in accuracy_rows if r.get("correct")),
+    }
+    overall_accuracy["rate_pct"] = (
+        round(overall_accuracy["correct"] / overall_accuracy["n"] * 100) if overall_accuracy["n"] else None
+    )
+
     category_counts = categorized["category"].value_counts().to_dict()
     score_stats = categorized.groupby("category")[["score", "raw_automation_score", "overall_detection_score"]].mean().round(1).to_dict("index")
 
@@ -208,6 +268,23 @@ def metrics_page(request: Request):
         category: group["band"].value_counts().to_dict()
         for category, group in categorized.groupby("category")
     }
+
+    # Score-distribution histogram per category — 10 buckets of 10 points each
+    # across overall_detection_score's 0-100 range. This is the actual shape
+    # behind detection_rates' single percentage: a category could hit the same
+    # catch rate either because every session clusters near 0 or 100 (confident
+    # either way) or because everything sits near the 50 threshold (the scorer
+    # is guessing) — the bar alone can't tell those apart, the histogram can.
+    HIST_BUCKET_SIZE = 10
+    HIST_BUCKET_COUNT = 100 // HIST_BUCKET_SIZE
+    score_histograms = {}
+    for category, group in categorized.groupby("category"):
+        counts = [0] * HIST_BUCKET_COUNT
+        for s in group["overall_detection_score"]:
+            idx = min(HIST_BUCKET_COUNT - 1, int(s // HIST_BUCKET_SIZE))
+            counts[idx] += 1
+        score_histograms[category] = counts
+    hist_max = max((max(counts) for counts in score_histograms.values() if counts), default=1) or 1
 
     # player_score lives on the sessions table, not in the signals dataframe — a
     # revealed-flow-only value (generator sessions never set it), so a plain
@@ -279,6 +356,15 @@ def metrics_page(request: Request):
         "categorical_dist": categorical_dist,
         "signal_labels": SIGNAL_LABELS,
         "weight_rows": weight_rows,
+        "accuracy_by_category": accuracy_by_category,
+        "overall_accuracy": overall_accuracy,
+        "accuracy_trend": accuracy_trend,
+        "trend_by_category": trend_by_category,
+        "trend_svg": trend_svg,
+        "overall_trend_svg": overall_trend_svg,
+        "score_histograms": score_histograms,
+        "hist_max": hist_max,
+        "hist_bucket_size": HIST_BUCKET_SIZE,
         "sessions": session_rows,
     })
 
@@ -421,8 +507,24 @@ def reveal(body: RevealBody, request: Request):
                         body.player_score, body.name, body.email)
         # Live weight update — see update_weights_from_reveal()'s docstring for
         # what "live" means here and the honor-system exposure that comes with
-        # wiring it straight to this unverified claim.
-        update_weights_from_reveal(body.session_id, body.claimed_type, conn)
+        # wiring it straight to this unverified claim. Also the actual accuracy
+        # record: persisted as an event for EVERY reveal (human included, not
+        # just bots/agents, and correct verdicts included, not just misses) —
+        # a weight nudge alone left no queryable trail of how often we're
+        # actually right.
+        outcome = update_weights_from_reveal(body.session_id, body.claimed_type, conn)
+        if outcome is not None:
+            insert_events(
+                conn,
+                [(
+                    body.session_id,
+                    "detection_accuracy",
+                    "/arcade",
+                    time.time() * 1000,
+                    _dumps(outcome),
+                    now,
+                )],
+            )
 
     # Best-effort, never blocks/breaks the reveal — see google_sheets.py's docstring.
     append_reveal(body.session_id, body.claimed_type, body.tool, body.name, body.email, body.player_score)

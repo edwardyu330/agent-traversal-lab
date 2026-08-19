@@ -25,6 +25,7 @@ ARCADE_STAGE_ORDER = [
     "c4_whack_a_mole",
     "a2_visual_vs_dom_order",
     "b1_layout_shift",
+    "b2_draw_shape",
     "a5_type_phrase",
     "a4_complexity_ramp",
 ]
@@ -47,9 +48,12 @@ NUMERIC_METRICS = [
     "path_optimality",
     "backtrack_count",
     "dead_end_rate",
+    "draw_shape_point_count",
+    "draw_shape_mean_deviation_px",
+    "draw_shape_angular_coverage_deg",
 ]
 CATEGORICAL_METRICS = ["perception_mode", "visual_vs_dom_order_choice"]
-BOOL_METRICS = ["dom_only_target_hit", "all_clicks_trusted", "has_pointerrawupdate", "no_pointer_or_click_telemetry"]
+BOOL_METRICS = ["dom_only_target_hit", "all_clicks_trusted", "has_pointerrawupdate", "no_pointer_or_click_telemetry", "draw_shape_attempted"]
 
 JANK_COMPROMISED_THRESHOLD = 0.10  # >10% dropped frames = timing data suspect
 # A human perception→act loop is roughly 200-300ms; the old distance÷velocity

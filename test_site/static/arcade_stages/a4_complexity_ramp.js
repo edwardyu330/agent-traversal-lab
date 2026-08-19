@@ -9,6 +9,8 @@
   // linear regression across levels to get latency_complexity_slope.
   const LEVELS = [4, 9, 16, 25]; // distractor-field sizes (total items per level)
   const TIMEOUT_MS = 6000;
+  const MAX_WRONG_ATTEMPTS_PER_LEVEL = 4;
+  const PENALTY_PER_WRONG = 3;
 
   function shuffle(arr) {
     const a = arr.slice();
@@ -37,6 +39,7 @@
       const stageStartTs = performance.now();
       const levelResults = [];
       let levelIndex = 0;
+      let levelWrongAttempts = 0;
       let done = false;
       let timeoutId = null;
 
@@ -54,6 +57,7 @@
           cell.className = "arcade-ramp-cell" + (i === targetPos ? " target" : "");
           cell.addEventListener("click", () => {
             ctx.setClickTargetRect(cell.isConnected ? cell.getBoundingClientRect() : null, !cell.isConnected);
+            ctx.reactAt(cell, i === targetPos);
             onCellClick(i === targetPos, count, levelStartTs);
           });
           grid.appendChild(cell);
@@ -62,16 +66,47 @@
         timeoutId = setTimeout(() => onCellClick(false, count, levelStartTs, true), TIMEOUT_MS);
       }
 
+      // A wrong click (or timeout) re-rolls the SAME level instead of
+      // advancing — the level only counts as done, and only feeds
+      // levelResults (what latency_complexity_slope regresses over), once
+      // gotten right or once MAX_WRONG_ATTEMPTS_PER_LEVEL is spent. A
+      // spam-clicker can't just click anything and ride the ramp forward.
       function onCellClick(correct, distractorCount, levelStartTs, timedOut) {
         if (done) return;
         clearTimeout(timeoutId);
-        levelResults.push({
-          distractor_count: distractorCount,
-          latency_ms: performance.now() - levelStartTs,
-          correct: !!correct,
-          timed_out: !!timedOut,
+        if (correct) {
+          levelResults.push({
+            distractor_count: distractorCount,
+            latency_ms: performance.now() - levelStartTs,
+            correct: true,
+            timed_out: false,
+            wrong_attempts: levelWrongAttempts,
+          });
+          levelIndex += 1;
+          levelWrongAttempts = 0;
+          runLevel();
+          return;
+        }
+        levelWrongAttempts += 1;
+        ctx.track("stage_result", {
+          stage_id: "a4_complexity_ramp",
+          stage_tier: "A",
+          duration_ms: performance.now() - levelStartTs,
+          correct: false,
+          extra: { distractor_count: distractorCount, timed_out: !!timedOut, attempt: levelWrongAttempts, level_index: levelIndex },
         });
-        levelIndex += 1;
+        if (levelWrongAttempts >= MAX_WRONG_ATTEMPTS_PER_LEVEL) {
+          levelResults.push({
+            distractor_count: distractorCount,
+            latency_ms: performance.now() - levelStartTs,
+            correct: false,
+            timed_out: !!timedOut,
+            gave_up: true,
+            wrong_attempts: levelWrongAttempts,
+          });
+          levelIndex += 1;
+          levelWrongAttempts = 0;
+        }
         runLevel();
       }
 
@@ -79,11 +114,12 @@
         if (done) return;
         done = true;
         const correctCount = levelResults.filter((r) => r.correct).length;
+        const totalWrongAttempts = levelResults.reduce((sum, r) => sum + (r.wrong_attempts || 0), 0);
         ctx.onDone({
           duration_ms: performance.now() - stageStartTs,
           correct: correctCount === levelResults.length,
           extra: { levels: levelResults },
-          player_points: correctCount * 10,
+          player_points: Math.max(0, correctCount * 10 - totalWrongAttempts * PENALTY_PER_WRONG),
         });
       }
 

@@ -17,7 +17,11 @@
   // Stamped on the session at creation (sessions.build_version) so audit_dataset.py
   // can group/filter by it instead of hand-inspecting which stage_results exist —
   // that's how we discovered 5 of 9 arcade sessions predated three stages this
-  // audit pass added. v4 = trackPageLoadSignals() — /arcade never sent a
+  // audit pass added. v5 = b2_draw_shape (new stage), reset-on-wrong-attempt for
+  // A1/A2/A4 (each now logs a stage_result per wrong attempt before the final
+  // one — see arcade_metrics._stage_result()'s "last match, not first" fix),
+  // per-wrong-attempt score penalties, and a live suspicion predictor polling
+  // /api/verdict during play. v4 = trackPageLoadSignals() — /arcade never sent a
   // page_load_signals event at all, leaving webdriver_artifacts.py's entire
   // signal set (webdriver_flag/suspicious_webgl_renderer/page_load_count)
   // structurally blind on the primary data-collection surface; found while
@@ -26,7 +30,7 @@
   // stale_element_interaction/has_pointerrawupdate; v2 = the original 7-stage
   // roster before those capture fixes (unstamped in the DB — inferred from
   // field absence, not a real recorded value).
-  const ARCADE_BUILD_VERSION = "v4-2026-08-18";
+  const ARCADE_BUILD_VERSION = "v5-2026-08-19";
 
   // Generator scripts (run_playwright_raw.py, run_browser_use.py) hit
   // /arcade?label=agent_raw_cdp|agent_llm_cdp to get a pre-labeled, trusted
@@ -205,20 +209,34 @@
     pendingStaleInteraction = staleInteraction === undefined ? false : staleInteraction;
   }
 
-  // Purely cosmetic — a fire-and-forget overlay element that animates and
-  // removes itself on its own timer, never awaited by or blocking any game
-  // logic. Deliberately NOT wired into any stage's click-to-advance path: C4's
-  // round budget (MOLE_VISIBLE_MS=850 + 120ms gap, x10 rounds) is already
-  // close to the external generator scripts' poll-window ceiling, so adding
-  // even a short delay to the actual advancement logic risks breaking their
-  // timing assumptions. This effect exists alongside that path, not inside it.
-  function spawnClickPop(x, y, hit) {
-    const el = document.createElement("div");
-    el.className = "arcade-click-pop" + (hit ? "" : " miss");
-    el.style.left = x + "px";
-    el.style.top = y + "px";
-    document.body.appendChild(el);
-    setTimeout(() => el.remove(), 400);
+  // Per-game reaction: clones the ACTUAL clicked element's rect/color into a
+  // fixed-position ghost that pops and fades, then removes itself on its own
+  // timer. Each stage calls this with its own element and its own hit/miss
+  // call — a mole squashes mole-colored, a box flashes box-colored, etc. —
+  // rather than one generic ring shared everywhere. Purely cosmetic and
+  // fire-and-forget: reads the element's rect/style synchronously (so it must
+  // be called BEFORE the caller removes that element), then never touches
+  // real game state again. Deliberately NOT wired into any stage's
+  // click-to-advance path: C4's round budget (MOLE_VISIBLE_MS=850 + 120ms
+  // gap, x10 rounds) is already close to the external generator scripts'
+  // poll-window ceiling, so adding even a short delay to the actual
+  // advancement logic risks breaking their timing assumptions. This effect
+  // exists alongside that path, not inside it.
+  function reactAt(el, hit) {
+    if (!el || !el.isConnected) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return;
+    const style = getComputedStyle(el);
+    const ghost = document.createElement("div");
+    ghost.className = "arcade-reaction " + (hit ? "hit" : "miss");
+    ghost.style.left = rect.left + "px";
+    ghost.style.top = rect.top + "px";
+    ghost.style.width = rect.width + "px";
+    ghost.style.height = rect.height + "px";
+    ghost.style.background = style.backgroundColor;
+    ghost.style.borderRadius = style.borderRadius;
+    document.body.appendChild(ghost);
+    setTimeout(() => ghost.remove(), 340);
   }
 
   document.addEventListener("click", (e) => {
@@ -228,7 +246,6 @@
     pendingStaleInteraction = null;
     const targetCx = rect ? rect.left + rect.width / 2 : null;
     const targetCy = rect ? rect.top + rect.height / 2 : null;
-    spawnClickPop(e.clientX, e.clientY, rect !== null);
     track("click_detail", {
       stage_id: currentStageId,
       x: e.clientX,
@@ -333,6 +350,7 @@
         onDone: resolve,
         prefersReducedMotion,
         setClickTargetRect,
+        reactAt,
       });
     });
 

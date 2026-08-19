@@ -12,6 +12,7 @@
   const DECOY_COUNT_RANGE = [2, 4];
   const REACTION_TIMEOUT_MS = 3000;
   const MAX_FALSE_STARTS = 4; // safety valve — a session that can never judge "settled" correctly still has to end eventually
+  const PENALTY_PER_WRONG = 3; // subtracted from this stage's points per false start — wrong = lower score, not just zero
 
   function pick(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
@@ -115,11 +116,12 @@
         if (done) return;
         done = true;
         canvas.removeEventListener("click", onClick);
+        const basePoints = correct ? Math.max(10, Math.round(500 - (reactionMs || 500))) : 0;
         ctx.onDone({
           duration_ms: performance.now() - startTs,
           correct,
           extra: { reaction_ms: reactionMs, target: target.name, false_start: !settled && reactionMs === null ? null : !settled },
-          player_points: correct ? Math.max(10, Math.round(500 - (reactionMs || 500))) : 0,
+          player_points: Math.max(0, basePoints - falseStarts * PENALTY_PER_WRONG),
         });
       }
 
@@ -138,6 +140,7 @@
       function onClick() {
         ctx.setClickTargetRect(canvas.isConnected ? canvas.getBoundingClientRect() : null, !canvas.isConnected);
         if (!settled) {
+          ctx.reactAt(canvas, false);
           falseStarts += 1;
           ctx.track("stage_result", {
             stage_id: "c1_flash_reaction",
@@ -153,6 +156,7 @@
           resetRound();
           return;
         }
+        ctx.reactAt(canvas, true);
         finish(true, performance.now() - settleTs);
       }
 

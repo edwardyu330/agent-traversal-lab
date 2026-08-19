@@ -61,7 +61,7 @@ straight to targets) with continuous, richer signal instead of one binary flag.
 import sqlite3
 
 from scoring.weights_store import load_weights, nudge, save_weights
-from signals import arcade_metrics, mouse_geometry, network_fingerprint, timing_analysis, webdriver_artifacts
+from signals import arcade_metrics, human_baseline, mouse_geometry, network_fingerprint, timing_analysis, webdriver_artifacts
 
 BANDS = (
     (70, "block"),
@@ -95,7 +95,7 @@ def _score_raw_automation(wd: dict, weights: dict) -> tuple[float, list[dict]]:
     return min(100, sum(r["points"] for r in breakdown)), breakdown
 
 
-def _score_arcade(arcade: dict, weights: dict) -> list[dict]:
+def _score_arcade(arcade: dict, weights: dict, human_ranges: dict) -> list[dict]:
     breakdown = []
 
     def add(name: str, reason: str):
@@ -146,20 +146,48 @@ def _score_arcade(arcade: dict, weights: dict) -> list[dict]:
             "streams, so progress with neither means the game was driven by something other "
             "than a dispatched pointer/click event")
 
+    if error_rate is not None and error_rate >= 0.85:
+        add("chronic_incorrect_spam",
+            f"wrong on {error_rate:.0%} of attempts, including stages that reset and gave repeat "
+            "tries on a wrong answer — getting it wrong nearly every single time, even across "
+            "retries, isn't a human having an off day, it's clicking without attempting the task")
+
+    if arcade["draw_shape_attempted"] and arcade["draw_shape_point_count"] is not None and arcade["draw_shape_point_count"] < 15:
+        add("sparse_draw_path",
+            f"traced the circle with only {arcade['draw_shape_point_count']} recorded points — a "
+            "real drag naturally produces dozens of intermediate samples, not a handful")
+
+    # Cross-referencing layer, not another hand-picked bot tell: does this
+    # session look like what real humans actually produce, independent of
+    # whether it also matches a catalogued automation pattern. See
+    # signals/human_baseline.py. Two or more signals outside the human
+    # 5th-95th percentile band together is the bar, not one alone — a single
+    # signal drifting outside typical human range happens by chance even for
+    # real humans (that's what "5th-95th", not "0th-100th", means).
+    outside = human_baseline.signals_outside_range(arcade, human_ranges)
+    if len(outside) >= 2:
+        add("outside_human_baseline",
+            f"{len(outside)} signals fall outside the range real human sessions actually produce "
+            f"(5th-95th percentile): {', '.join(outside)}")
+
     return breakdown
 
 
-def score_session(session_id: str, conn: sqlite3.Connection) -> dict:
+def score_session(session_id: str, conn: sqlite3.Connection, weights: dict | None = None) -> dict:
     # Loaded fresh every call, not cached at import time — this is exactly what
     # makes the scorer "live": a weight nudged by update_weights_from_reveal()
     # a second ago is already in effect for the very next /api/verdict call.
-    weights = load_weights()
+    # `weights` can be passed explicitly to score against a CANDIDATE set that
+    # isn't live yet — see update_weights_from_reveal()'s human-safety check,
+    # which needs to ask "what would this nudge do" before committing it.
+    weights = weights if weights is not None else load_weights()
 
     wd = webdriver_artifacts.extract(session_id, conn)
     timing = timing_analysis.extract(session_id, conn)
     mouse = mouse_geometry.extract(session_id, conn)
     network = network_fingerprint.extract(session_id, conn)
     arcade = arcade_metrics.extract(session_id, conn)
+    human_ranges = human_baseline.compute_human_ranges(conn)
 
     raw_automation_score, raw_automation_breakdown = _score_raw_automation(wd, weights)
 
@@ -177,7 +205,7 @@ def score_session(session_id: str, conn: sqlite3.Connection) -> dict:
         elif curvature <= 1.3:
             add("mostly_straight_mouse_path", f"mean path curvature {curvature:.2f}")
 
-    breakdown.extend(_score_arcade(arcade, weights))
+    breakdown.extend(_score_arcade(arcade, weights, human_ranges))
 
     total = min(100, sum(r["points"] for r in breakdown))
 
@@ -205,6 +233,26 @@ def score_session(session_id: str, conn: sqlite3.Connection) -> dict:
     }
 
 
+def _nudge_creates_human_false_positive(current_weights: dict, candidate_weights: dict, conn: sqlite3.Connection) -> bool:
+    """True if scoring every known human-labeled session under candidate_weights
+    would newly flip any of them from Human to Bot, compared to current_weights.
+    Sessions already misclassified under current_weights are skipped — this
+    catches a nudge making things WORSE, not pre-existing problems it didn't
+    cause (those need their own fix, not a block on unrelated future nudges)."""
+    from signals.common import get_session, list_session_ids
+
+    for sid in list_session_ids(conn):
+        if get_session(conn, sid).get("label") != "human":
+            continue
+        before = score_session(sid, conn, weights=current_weights)["overall_detection_score"]
+        if before >= 50:
+            continue
+        after = score_session(sid, conn, weights=candidate_weights)["overall_detection_score"]
+        if after >= 50:
+            return True
+    return False
+
+
 def update_weights_from_reveal(session_id: str, claimed_type: str, conn: sqlite3.Connection) -> dict | None:
     """Live weight update, run on every /api/reveal. This is the "algorithm
     constantly changes as people signal which type of user they are" behavior,
@@ -219,33 +267,70 @@ def update_weights_from_reveal(session_id: str, claimed_type: str, conn: sqlite3
     this function (e.g. only counting reveals whose claim doesn't contradict
     strong independent signals), not inside it.
 
-    Only adjusts on a MISCLASSIFICATION (perceptron-style: correct verdicts
-    reinforce nothing, since there's nothing to correct), and only the rules
-    in whichever track (arcade vs. raw-automation) actually determined
-    overall_detection_score — the other track wasn't "responsible" for the
-    wrong verdict shown, so it isn't touched. A session where nothing fired at
-    all (e.g. a fully-evasive bot with zero tripped rules) has nothing to
-    nudge — this mechanism can strengthen or weaken existing signals, it can't
-    invent a new one.
+    Weights only move on a MISCLASSIFICATION (perceptron-style: correct
+    verdicts reinforce nothing, since there's nothing to correct), and only
+    the rules in whichever track (arcade vs. raw-automation) actually
+    determined overall_detection_score — the other track wasn't "responsible"
+    for the wrong verdict shown, so it isn't touched. A session where nothing
+    fired at all (e.g. a fully-evasive bot with zero tripped rules) has
+    nothing to nudge — this mechanism can strengthen or weaken existing
+    signals, it can't invent a new one.
+
+    Returns an outcome dict for EVERY recognized claimed_type — correct
+    verdicts included, not just misclassifications — so the caller (server.py's
+    /api/reveal) can persist a `detection_accuracy` event either way. This is
+    the actual accuracy record: every self-report, human included, not just
+    the ones that happened to move a weight. Returns None only when
+    claimed_type isn't in CLAIMED_TYPE_TO_AUTOMATION (no ground truth to check
+    against at all).
     """
     if claimed_type not in CLAIMED_TYPE_TO_AUTOMATION:
         return None
     true_automation = CLAIMED_TYPE_TO_AUTOMATION[claimed_type]
 
     result = score_session(session_id, conn)
+    verdict = coarse_verdict(result["overall_detection_score"])
     predicted_automation = result["overall_detection_score"] >= 50
-    if predicted_automation == true_automation:
-        return None
+    correct = predicted_automation == true_automation
 
-    dominant = result["breakdown"] if result["score"] >= result["raw_automation_score"] else result["raw_automation_breakdown"]
-    if not dominant:
-        return None
+    nudged_rules = None
+    if not correct:
+        dominant = result["breakdown"] if result["score"] >= result["raw_automation_score"] else result["raw_automation_breakdown"]
+        if dominant:
+            direction = 1 if true_automation else -1
+            current_weights = load_weights()
+            candidate = dict(current_weights)
+            nudge(candidate, [r["rule"] for r in dominant], direction)
+            # Safety valve, only relevant when strengthening (direction=1) —
+            # weakening a rule can only ever help humans, never hurt them.
+            # Simulates the candidate weights against every known human
+            # session BEFORE committing; if any human that currently reads
+            # correctly would flip to a false positive under the candidate,
+            # skip this nudge rather than apply it. Found necessary the hard
+            # way: no_path_corrections drifted 10->42 purely from repeated,
+            # individually-correct stealth-bot nudges, and at 42 it started
+            # misclassifying real humans with unremarkable, low-correction
+            # mouse paths — each nudge was locally justified, the accumulated
+            # result wasn't. This doesn't make the system safe against a
+            # sustained poisoning campaign (see this function's main
+            # docstring), it makes it safe against catching real humans in
+            # the crossfire of legitimately-earned bot-catching pressure.
+            if direction == 1 and _nudge_creates_human_false_positive(current_weights, candidate, conn):
+                nudged_rules = None
+            else:
+                save_weights(candidate)
+                nudged_rules = [r["rule"] for r in dominant]
 
-    direction = 1 if true_automation else -1
-    weights = load_weights()
-    nudge(weights, [r["rule"] for r in dominant], direction)
-    save_weights(weights)
-    return weights
+    return {
+        "correct": correct,
+        "claimed_type": claimed_type,
+        "true_automation": true_automation,
+        "predicted_automation": predicted_automation,
+        "predicted_verdict": verdict["verdict"],
+        "confidence": verdict["confidence"],
+        "overall_detection_score": result["overall_detection_score"],
+        "nudged_rules": nudged_rules,
+    }
 
 
 def coarse_verdict(score: float) -> dict:

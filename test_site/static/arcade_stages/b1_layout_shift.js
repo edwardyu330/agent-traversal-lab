@@ -100,6 +100,7 @@
 
       target.addEventListener("click", (e) => {
         ctx.setClickTargetRect(target.isConnected ? target.getBoundingClientRect() : null, !target.isConnected);
+        ctx.reactAt(target, true);
         finish(e.clientX, e.clientY, now(), false);
       });
 

@@ -36,10 +36,20 @@ def _cv(values: list[float]) -> float | None:
 
 
 def _stage_result(events: list[dict], stage_id: str) -> dict | None:
+    """The LAST matching stage_result, not the first. Several stages
+    (c1_flash_reaction, a1_perception_probe, a2_visual_vs_dom_order,
+    a4_complexity_ramp) log an intermediate stage_result per wrong attempt
+    now, via ctx.track(), before the harness's own onDone-triggered one —
+    that harness-generated event is always the actual outcome and always
+    comes last chronologically (get_events() returns events ordered by
+    client_ts, and mount()'s promise only resolves, triggering the harness's
+    log call, after every intermediate attempt already happened). Returning
+    the first match would silently grab a wrong attempt instead."""
+    result = None
     for e in events:
         if e["type"] == "stage_result" and e["payload"].get("stage_id") == stage_id:
-            return e["payload"]
-    return None
+            result = e["payload"]
+    return result
 
 
 def _perception_mode(events: list[dict]) -> str | None:
@@ -215,6 +225,27 @@ def _latency_complexity_slope(events: list[dict]) -> float | None:
     return _linear_regression_slope(points)
 
 
+def _draw_shape_metrics(events: list[dict]) -> tuple[int | None, float | None, float | None, bool | None]:
+    """From B2's trace-the-circle stage: point_count (samples during the drag
+    — a real drag naturally produces dozens, a script faking it with a couple
+    of teleporting mouse.move() calls produces very few), mean_deviation_px
+    (how tightly the traced path hugged the target radius), angular_coverage_deg
+    (did they actually sweep most of a loop, not just scribble), and whether
+    they attempted it at all (distinguishes "didn't even try" from "tried and
+    failed" — a bot that has no drawing logic times out with attempted=False).
+    """
+    result = _stage_result(events, "b2_draw_shape")
+    if result is None:
+        return None, None, None, None
+    extra = result.get("extra", {})
+    return (
+        extra.get("point_count"),
+        extra.get("mean_deviation_px"),
+        extra.get("angular_coverage_deg"),
+        extra.get("attempted"),
+    )
+
+
 MIN_SHIFT_DISPLACEMENT_PX = 30  # below this, pre/post are too close to tell which one a click was aimed at
 
 
@@ -332,6 +363,8 @@ def extract(session_id: str, conn: sqlite3.Connection) -> dict:
     stale_flags = [f for f in stale_flags if f is not None]
     stale_element_interaction_rate = (sum(1 for f in stale_flags if f) / len(stale_flags)) if stale_flags else None
 
+    draw_point_count, draw_mean_deviation, draw_angular_coverage, draw_attempted = _draw_shape_metrics(events)
+
     return {
         "ran_arcade": complete is not None,
         "reduced_motion": reduced_motion,
@@ -357,6 +390,13 @@ def extract(session_id: str, conn: sqlite3.Connection) -> dict:
         "all_clicks_trusted": all_clicks_trusted,
         "stale_element_interaction_rate": stale_element_interaction_rate,
         "no_pointer_or_click_telemetry": _telemetry_free_progress(events),
+        # B2 — trace-the-circle. draw_shape_attempted distinguishes "never
+        # tried" (bot with no drawing logic, times out) from "tried and
+        # produced a suspiciously sparse/inaccurate path."
+        "draw_shape_point_count": draw_point_count,
+        "draw_shape_mean_deviation_px": draw_mean_deviation,
+        "draw_shape_angular_coverage_deg": draw_angular_coverage,
+        "draw_shape_attempted": draw_attempted,
         # Not computable without stages that don't exist yet (A4, A5, A6, B1) —
         # explicit None, not faked. Wire these up when those stages land.
         "ipi_cv": ipi_cv,
