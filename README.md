@@ -4,6 +4,16 @@ Local research harness for observing how AI agents vs. humans traverse a website
 producing a first-pass, rule-based session score from the technical signals that separate
 them. See [CLAUDE.md](CLAUDE.md) for scope, guardrails, and conventions.
 
+**Part 1 of two research phases.** This is the behavioral-signal phase — what a session
+*does* (mouse/keyboard/timing/perception probes on the `/arcade` gauntlet) separates human
+from agent. Phase 2, [network-identity-lab](https://github.com/edwardyu330/network-identity-lab),
+picks up where this one's own findings pointed: a threshold calibrated on naive agent
+traffic caught 0% of a moderately careful adversary (see
+`analysis/adversarial_rescore.py`), and every signal that survived adversarial pressure
+was cross-session, not within-session. That's the network/TLS/identity-clustering layer
+this repo's behavioral signals can't reach on their own — it only sees traffic that
+executes JavaScript, and network-identity-lab is what covers what's left.
+
 ## Status
 
 - [x] Phase 1 — instrumented test site + client-side collector + SQLite storage
